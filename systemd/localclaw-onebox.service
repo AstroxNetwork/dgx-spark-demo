@@ -1,0 +1,18 @@
+[Unit]
+Description=LocalClaw OneBox demo stack
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=spark
+Group=spark
+WorkingDirectory=/home/spark/src/dgx-spark-demo
+Environment=HOME=/home/spark
+Environment=NVM_DIR=/home/spark/.nvm
+ExecStart=/bin/bash /home/spark/src/dgx-spark-demo/scripts/start_dgx_runtime.sh
+RemainAfterExit=yes
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
