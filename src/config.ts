@@ -23,7 +23,6 @@ export const CONFIG: {
   asrBaseUrl: string;
   asrModel: string;
   openclawBaseUrl: string;
-  ttsSidecarBaseUrl: string;
   ttsBaseUrl: string;
   ttsStreamBaseUrl: string;
   ttsModel: string;
@@ -34,7 +33,6 @@ export const CONFIG: {
   asrBaseUrl: '/asr-api',
   asrModel: 'Qwen/Qwen3-ASR-1.7B',
   openclawBaseUrl: '/openclaw-api',
-  ttsSidecarBaseUrl: '/tts-sidecar-api',
   ttsBaseUrl: '/tts-api',
   ttsStreamBaseUrl: '/tts-stream-api',
   ttsModel: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',

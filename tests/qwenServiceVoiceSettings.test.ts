@@ -242,39 +242,6 @@ test('warmupChat calls the OpenClaw warmup endpoint', async () => {
   assert.deepEqual(requestedUrls, ['/openclaw-api/warmup']);
 });
 
-test('synthesize returns null when the local TTS sidecar merges the segment into an earlier request', async () => {
-  const originalFetch = globalThis.fetch;
-  let requestBody: Record<string, unknown> | null = null;
-
-  globalThis.fetch = async (input, init) => {
-    assert.match(String(input), /\/tts-sidecar-api\/audio\/segment-speech$/);
-    requestBody = JSON.parse(String(init?.body));
-
-    return new Response(JSON.stringify({ merged: true }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-
-  try {
-    const result = await qwenService.synthesize('你好', {
-      voice: 'Vivian',
-      language: 'Chinese',
-      sessionId: 'session-1',
-    });
-    assert.equal(result, null);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.equal(requestBody?.do_sample, true);
-  assert.equal(requestBody?.temperature, 0.5);
-  assert.equal(requestBody?.top_k, 10);
-  assert.equal(requestBody?.top_p, 0.8);
-  assert.equal(requestBody?.repetition_penalty, 1.05);
-  assert.equal(typeof requestBody?.seed, 'number');
-});
-
 test('synthesizeStreaming requests PCM streaming from the vLLM endpoint', async () => {
   const originalFetch = globalThis.fetch;
   let requestUrl = '';
@@ -336,46 +303,6 @@ test('synthesize skips direct TTS requests when the input is empty', async () =>
   }
 
   assert.equal(fetchCalled, false);
-});
-
-test('synthesize falls back to the direct TTS endpoint when the local sidecar is unavailable', async () => {
-  const originalFetch = globalThis.fetch;
-  const requests: string[] = [];
-
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    requests.push(url);
-
-    if (url.endsWith('/tts-sidecar-api/audio/segment-speech')) {
-      return new Response('missing', { status: 404 });
-    }
-
-    if (url.endsWith('/tts-api/audio/speech')) {
-      return new Response(new Blob(['wav'], { type: 'audio/wav' }), {
-        status: 200,
-        headers: { 'Content-Type': 'audio/wav' },
-      });
-    }
-
-    throw new Error(`Unexpected URL: ${url}`);
-  };
-
-  try {
-    const result = await qwenService.synthesize('你好', {
-      voice: 'Vivian',
-      language: 'Chinese',
-      sessionId: 'session-1',
-      flush: true,
-    });
-    assert.ok(result instanceof Blob);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-
-  assert.deepEqual(requests, [
-    '/tts-sidecar-api/audio/segment-speech',
-    '/tts-api/audio/speech',
-  ]);
 });
 
 test('voiceChat strips leading assistant labels like Response or 中文回答', async () => {

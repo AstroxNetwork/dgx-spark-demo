@@ -27,10 +27,6 @@ interface TtsRequestOptions {
   topP?: number;
   repetitionPenalty?: number;
   seed?: number;
-  sessionId?: string;
-  flush?: boolean;
-  priority?: number;
-  sequence?: number;
 }
 
 interface ChatRequestOptions {
@@ -100,7 +96,6 @@ class StreamChunkQueue {
 class QwenService {
   private asrBaseUrl: string;
   private openclawBaseUrl: string;
-  private ttsSidecarBaseUrl: string;
   private ttsBaseUrl: string;
   private ttsStreamBaseUrl: string;
   private apiKey: string;
@@ -109,7 +104,6 @@ class QwenService {
   constructor() {
     this.asrBaseUrl = CONFIG.asrBaseUrl;
     this.openclawBaseUrl = CONFIG.openclawBaseUrl;
-    this.ttsSidecarBaseUrl = CONFIG.ttsSidecarBaseUrl;
     this.ttsBaseUrl = CONFIG.ttsBaseUrl;
     this.ttsStreamBaseUrl = CONFIG.ttsStreamBaseUrl;
     this.apiKey = CONFIG.apiKey;
@@ -232,29 +226,8 @@ class QwenService {
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
     const seed = normalizedOptions.seed ?? this.createTtsTurnSeed();
 
-    if (!trimmedText && !normalizedOptions.flush) {
+    if (!trimmedText) {
       return null;
-    }
-
-    if (normalizedOptions.sessionId) {
-      try {
-        return await this.synthesizeThroughSidecar(trimmedText, {
-          voice,
-          language,
-          doSample,
-          temperature,
-          topK,
-          topP,
-          repetitionPenalty,
-          seed,
-          sessionId: normalizedOptions.sessionId,
-          flush: normalizedOptions.flush ?? false,
-          priority: normalizedOptions.priority ?? 1,
-          sequence: normalizedOptions.sequence,
-        });
-      } catch (error) {
-        console.warn('⚠️ 本地 TTS 旁路不可用，回退到直连模式:', error);
-      }
     }
 
     console.log({ voice });
@@ -351,76 +324,6 @@ class QwenService {
       sampleRate: CONFIG.ttsStreamSampleRate,
       channels: 1,
     };
-  }
-
-  private async synthesizeThroughSidecar(
-    optionsText: string,
-    options:
-      Required<
-        Pick<
-          TtsRequestOptions,
-          | 'voice'
-          | 'language'
-          | 'doSample'
-          | 'temperature'
-          | 'topK'
-          | 'topP'
-          | 'repetitionPenalty'
-          | 'seed'
-          | 'sessionId'
-          | 'flush'
-          | 'priority'
-        >
-      >
-      & Pick<TtsRequestOptions, 'sequence'>,
-  ): Promise<Blob | null> {
-    const response = await fetch(`${this.ttsSidecarBaseUrl}/audio/segment-speech`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(this.apiKey ? { 'Authorization': `Bearer ${this.apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model: CONFIG.ttsModel,
-        input: optionsText,
-        voice: options.voice,
-        speed: 1,
-        task_type: 'CustomVoice',
-        language: options.language,
-        do_sample: options.doSample,
-        temperature: options.temperature,
-        top_k: options.topK,
-        top_p: options.topP,
-        repetition_penalty: options.repetitionPenalty,
-        seed: options.seed,
-        response_format: 'wav',
-        session_id: options.sessionId,
-        flush: options.flush,
-        priority: options.priority,
-        sequence: options.sequence,
-      }),
-    });
-
-    if (response.status === 404) {
-      throw new Error('TTS sidecar endpoint not found');
-    }
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`TTS Sidecar Error: ${response.status} - ${error}`);
-    }
-
-    const contentType = response.headers.get('Content-Type') ?? '';
-    if (contentType.includes('application/json')) {
-      const result = await response.json();
-      if (result?.merged) {
-        return null;
-      }
-
-      throw new Error('Unexpected JSON response from TTS sidecar');
-    }
-
-    return await response.blob();
   }
 
   /**
