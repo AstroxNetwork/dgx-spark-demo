@@ -189,7 +189,7 @@ export function VoiceChat() {
   const isGlobalSpacePressActiveRef = useRef(false);
 
   const { isRecording, startRecording, stopRecording, error: recordError } = useAudioRecorder();
-  const { playAudio, stopAudio, isPlaying, audioLevel, audioRef } = useAudioPlayer();
+  const { playAudio, playAudioStream, stopAudio, isPlaying, audioLevel, audioRef } = useAudioPlayer();
   const text = UI_TEXT[locale];
   const localizedRecordError = localizeUiError(recordError, locale);
 
@@ -262,6 +262,9 @@ export function VoiceChat() {
           assistantAudioSegments.push(chunk.audio);
           void playAudio(chunk.audio);
         }
+        if (chunk.audioStream) {
+          void playAudioStream(chunk.audioStream);
+        }
       }
 
       // Add assistant response
@@ -282,7 +285,7 @@ export function VoiceChat() {
       setIsProcessing(false);
       setTimeout(scrollToBottom, 100);
     }
-  }, [messages, playAudio, scrollToBottom, selectedVoice, useReasoning]);
+  }, [messages, playAudio, playAudioStream, scrollToBottom, selectedVoice, useReasoning]);
 
   const processText = useCallback(async (userText: string) => {
     const trimmedUserText = userText.trim();
@@ -325,6 +328,9 @@ export function VoiceChat() {
           assistantAudioSegments.push(chunk.audio);
           void playAudio(chunk.audio);
         }
+        if (chunk.audioStream) {
+          void playAudioStream(chunk.audioStream);
+        }
       }
 
       if (assistantText) {
@@ -344,7 +350,7 @@ export function VoiceChat() {
       setIsProcessing(false);
       setTimeout(scrollToBottom, 100);
     }
-  }, [messages, playAudio, scrollToBottom, selectedVoice, useReasoning]);
+  }, [messages, playAudio, playAudioStream, scrollToBottom, selectedVoice, useReasoning]);
 
   const replayMessageAudio = useCallback(async (message: ChatMessage) => {
     if (!message.audioSegments?.length) return;
@@ -570,10 +576,20 @@ export function VoiceChat() {
     <div className="voice-chat">
       <audio ref={audioRef} />
 
-      <div className="chat-container">
+      <div className={`chat-container ${isProcessing ? 'thinking' : ''}`}>
         <div className="chat-header">
           <h1>{text.title}</h1>
           <div className="top-actions">
+            <select
+              value={locale}
+              onChange={(e) => setLocale(e.target.value as Locale)}
+              className="voice-select top-language-select"
+              aria-label={text.language}
+            >
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+              <option value="ja">日本語</option>
+            </select>
             <button
               type="button"
               className="top-action-btn"
@@ -613,16 +629,6 @@ export function VoiceChat() {
 
         {isSettingsOpen ? (
           <div className="settings-panel settings-popover">
-            <select
-              value={locale}
-              onChange={(e) => setLocale(e.target.value as Locale)}
-              className="voice-select"
-              aria-label={text.language}
-            >
-              <option value="zh">中文</option>
-              <option value="en">English</option>
-              <option value="ja">日本語</option>
-            </select>
             <select
               id="voice-select"
               value={selectedVoice}

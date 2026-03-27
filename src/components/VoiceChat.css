@@ -42,7 +42,15 @@
   box-shadow:
     0 32px 70px rgba(2, 6, 23, 0.45),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition:
+    border-color 0.24s ease,
+    box-shadow 0.24s ease;
   backdrop-filter: blur(14px);
+}
+
+.chat-container.thinking {
+  border-color: rgba(125, 211, 252, 0.34);
+  animation: thinkingContainerGlow 1.9s ease-in-out infinite;
 }
 
 .chat-header {
@@ -133,6 +141,15 @@
   min-width: 132px;
   cursor: pointer;
   box-shadow: none;
+}
+
+.top-language-select {
+  min-width: 104px;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .voice-select:hover,
@@ -458,6 +475,30 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes thinkingContainerGlow {
+  0%, 100% {
+    border-color: rgba(125, 211, 252, 0.24);
+    box-shadow:
+      0 0 0 1px rgba(125, 211, 252, 0.24),
+      0 0 0 4px rgba(59, 130, 246, 0.06),
+      0 0 28px 2px rgba(37, 99, 235, 0.12),
+      0 32px 70px rgba(2, 6, 23, 0.45),
+      inset 0 0 0 1px rgba(125, 211, 252, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+  50% {
+    border-color: rgba(147, 197, 253, 0.56);
+    box-shadow:
+      0 0 0 1px rgba(147, 197, 253, 0.52),
+      0 0 0 6px rgba(96, 165, 250, 0.12),
+      0 0 42px 6px rgba(59, 130, 246, 0.3),
+      0 0 96px 10px rgba(37, 99, 235, 0.18),
+      0 32px 70px rgba(2, 6, 23, 0.45),
+      inset 0 0 0 1px rgba(147, 197, 253, 0.2),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
   }
 }
 

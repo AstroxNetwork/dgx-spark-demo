@@ -1,0 +1,17 @@
+[Unit]
+Description=LocalClaw Caddy reverse proxy
+After=network-online.target localclaw-onebox.service
+Wants=network-online.target localclaw-onebox.service
+
+[Service]
+Type=oneshot
+User=spark
+Group=spark
+WorkingDirectory=/home/spark
+Environment=HOME=/home/spark
+ExecStart=/bin/bash /home/spark/openclaw-proxy/start-caddy.sh
+RemainAfterExit=yes
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

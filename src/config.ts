@@ -13,13 +13,21 @@ export const AVAILABLE_VOICES = [
 
 export type VoiceType = typeof AVAILABLE_VOICES[number];
 
+const VITE_ENV = (typeof import.meta !== 'undefined' && import.meta.env)
+  ? import.meta.env
+  : {} as Record<string, string | undefined>;
+
+const TTS_STREAM_SAMPLE_RATE = Number(VITE_ENV.VITE_TTS_STREAM_SAMPLE_RATE || 24000);
+
 export const CONFIG: {
   asrBaseUrl: string;
   asrModel: string;
   openclawBaseUrl: string;
   ttsSidecarBaseUrl: string;
   ttsBaseUrl: string;
+  ttsStreamBaseUrl: string;
   ttsModel: string;
+  ttsStreamSampleRate: number;
   apiKey: string;
   defaultVoice: VoiceType;
 } = {
@@ -28,7 +36,9 @@ export const CONFIG: {
   openclawBaseUrl: '/openclaw-api',
   ttsSidecarBaseUrl: '/tts-sidecar-api',
   ttsBaseUrl: '/tts-api',
+  ttsStreamBaseUrl: '/tts-stream-api',
   ttsModel: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',
+  ttsStreamSampleRate: Number.isFinite(TTS_STREAM_SAMPLE_RATE) ? TTS_STREAM_SAMPLE_RATE : 24000,
   apiKey: '',
   defaultVoice: 'Vivian',
 };

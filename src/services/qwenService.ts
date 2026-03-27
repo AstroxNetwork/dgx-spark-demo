@@ -1,37 +1,36 @@
-import { CONFIG, SYSTEM_PROMPT } from '../config';
-import type { ChatMessage, VoiceType, StreamChunk } from '../types';
-
-const TTS_STABILITY_INSTRUCTIONS = [
-  '用默认的音调，新闻联播的口吻，不带任何的情绪',
-].join(' ');
+import { CONFIG } from '../config';
+import type { ChatMessage, VoiceType, StreamChunk, StreamingAudioPayload } from '../types';
+import { toPlainTextForSpeech } from '../utils/plainText';
 
 const TTS_STABILITY_SAMPLING = {
-  doSample: false,
+  doSample: true,
   temperature: 0.5,
   topK: 10,
   topP: 0.8,
   repetitionPenalty: 1.05,
 } as const;
-
-const FIRST_STREAMING_TTS_SEGMENT_LENGTH = 8;
-const FIRST_STREAMING_TTS_BOUNDARIES = 1;
-const FIRST_STREAMING_TTS_CHINESE_MIN_LENGTH = 40;
-const FIRST_STREAMING_TTS_ENGLISH_MIN_LENGTH = 80;
-const MIN_STREAMING_TTS_SEGMENT_LENGTH = 18;
-const MIN_STREAMING_TTS_BOUNDARIES = 2;
+const ASR_BRAND_NORMALIZATION_RULES: Array<[RegExp, string]> = [
+  [/\blocal\s*claw\s*one\s*box\b/gi, 'LocalClaw OneBox'],
+  [/\bopen\s*core\b/gi, 'OpenClaw'],
+  [/\bopen\s*claw\b/gi, 'OpenClaw'],
+  [/\bopencl\b/gi, 'OpenClaw'],
+  [/\bopen\s*viking\b/gi, 'OpenViking'],
+  [/\bdgx\s*spark\b/gi, 'DGX Spark'],
+];
 
 interface TtsRequestOptions {
   voice?: VoiceType;
   language?: string;
-  instructions?: string;
   doSample?: boolean;
   temperature?: number;
   topK?: number;
   topP?: number;
   repetitionPenalty?: number;
+  seed?: number;
   sessionId?: string;
   flush?: boolean;
   priority?: number;
+  sequence?: number;
 }
 
 interface ChatRequestOptions {
@@ -103,6 +102,7 @@ class QwenService {
   private openclawBaseUrl: string;
   private ttsSidecarBaseUrl: string;
   private ttsBaseUrl: string;
+  private ttsStreamBaseUrl: string;
   private apiKey: string;
   private openclawSessionId: string | null;
 
@@ -111,6 +111,7 @@ class QwenService {
     this.openclawBaseUrl = CONFIG.openclawBaseUrl;
     this.ttsSidecarBaseUrl = CONFIG.ttsSidecarBaseUrl;
     this.ttsBaseUrl = CONFIG.ttsBaseUrl;
+    this.ttsStreamBaseUrl = CONFIG.ttsStreamBaseUrl;
     this.apiKey = CONFIG.apiKey;
     this.openclawSessionId = null;
   }
@@ -148,7 +149,9 @@ class QwenService {
     console.log('🎤 ASR Response:', result);
 
     // 兼容不同的响应格式
-    return result.text || result.transcript || JSON.stringify(result);
+    return this.normalizeUserInputText(
+      result.text || result.transcript || JSON.stringify(result),
+    );
   }
 
   /**
@@ -167,8 +170,6 @@ class QwenService {
       },
       body: JSON.stringify({
         userText,
-        history,
-        systemPrompt: SYSTEM_PROMPT,
         sessionId: this.resolveOpenClawSessionId(history),
         think: options.think ?? false,
       }),
@@ -180,7 +181,7 @@ class QwenService {
     }
 
     const payload = await response.json() as { text?: string; error?: string; sessionId?: string };
-    const text = payload.text?.trim() ?? '';
+    const text = toPlainTextForSpeech(payload.text?.trim() ?? '');
     if (payload.sessionId) {
       this.openclawSessionId = payload.sessionId;
     }
@@ -217,12 +218,11 @@ class QwenService {
     text: string,
     options: TtsRequestOptions | VoiceType = CONFIG.defaultVoice,
   ): Promise<Blob | null> {
-    const trimmedText = text.trim();
+    const trimmedText = toPlainTextForSpeech(text.trim());
     const normalizedOptions = typeof options === 'string'
       ? { voice: options }
       : options;
     const voice = normalizedOptions.voice ?? CONFIG.defaultVoice;
-    const instructions = normalizedOptions.instructions ?? TTS_STABILITY_INSTRUCTIONS;
     const language = normalizedOptions.language ?? this.inferTtsLanguage(text);
     const doSample = normalizedOptions.doSample ?? TTS_STABILITY_SAMPLING.doSample;
     const temperature = normalizedOptions.temperature ?? TTS_STABILITY_SAMPLING.temperature;
@@ -230,6 +230,7 @@ class QwenService {
     const topP = normalizedOptions.topP ?? TTS_STABILITY_SAMPLING.topP;
     const repetitionPenalty =
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
+    const seed = normalizedOptions.seed ?? this.createTtsTurnSeed();
 
     if (!trimmedText && !normalizedOptions.flush) {
       return null;
@@ -239,23 +240,24 @@ class QwenService {
       try {
         return await this.synthesizeThroughSidecar(trimmedText, {
           voice,
-          instructions,
           language,
           doSample,
           temperature,
           topK,
           topP,
           repetitionPenalty,
+          seed,
           sessionId: normalizedOptions.sessionId,
           flush: normalizedOptions.flush ?? false,
           priority: normalizedOptions.priority ?? 1,
+          sequence: normalizedOptions.sequence,
         });
       } catch (error) {
         console.warn('⚠️ 本地 TTS 旁路不可用，回退到直连模式:', error);
       }
     }
 
-    console.log({ voice, instructions });
+    console.log({ voice });
 
     const response = await fetch(`${this.ttsBaseUrl}/audio/speech`, {
       method: 'POST',
@@ -267,7 +269,6 @@ class QwenService {
         model: CONFIG.ttsModel,
         input: trimmedText,
         voice,
-        instructions,
         speed: 1,
         task_type: 'CustomVoice',
         language,
@@ -276,6 +277,7 @@ class QwenService {
         top_k: topK,
         top_p: topP,
         repetition_penalty: repetitionPenalty,
+        seed,
         response_format: 'wav',
       }),
     });
@@ -288,24 +290,89 @@ class QwenService {
     return await response.blob();
   }
 
+  async synthesizeStreaming(
+    text: string,
+    options: TtsRequestOptions | VoiceType = CONFIG.defaultVoice,
+  ): Promise<StreamingAudioPayload | null> {
+    const trimmedText = toPlainTextForSpeech(text.trim());
+    if (!trimmedText) {
+      return null;
+    }
+
+    const normalizedOptions = typeof options === 'string'
+      ? { voice: options }
+      : options;
+    const voice = normalizedOptions.voice ?? CONFIG.defaultVoice;
+    const language = normalizedOptions.language ?? this.inferTtsLanguage(text);
+    const doSample = normalizedOptions.doSample ?? TTS_STABILITY_SAMPLING.doSample;
+    const temperature = normalizedOptions.temperature ?? TTS_STABILITY_SAMPLING.temperature;
+    const topK = normalizedOptions.topK ?? TTS_STABILITY_SAMPLING.topK;
+    const topP = normalizedOptions.topP ?? TTS_STABILITY_SAMPLING.topP;
+    const repetitionPenalty =
+      normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
+    const seed = normalizedOptions.seed ?? this.createTtsTurnSeed();
+
+    const response = await fetch(`${this.ttsStreamBaseUrl}/audio/speech`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(this.apiKey ? { 'Authorization': `Bearer ${this.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: CONFIG.ttsModel,
+        input: trimmedText,
+        voice,
+        speed: 1,
+        task_type: 'CustomVoice',
+        language,
+        do_sample: doSample,
+        temperature,
+        top_k: topK,
+        top_p: topP,
+        repetition_penalty: repetitionPenalty,
+        seed,
+        stream: true,
+        response_format: 'pcm',
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Streaming TTS Error: ${response.status} - ${error}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Streaming TTS returned no response body');
+    }
+
+    return {
+      stream: response.body,
+      format: 'pcm_s16le',
+      sampleRate: CONFIG.ttsStreamSampleRate,
+      channels: 1,
+    };
+  }
+
   private async synthesizeThroughSidecar(
     optionsText: string,
-    options: Required<
-      Pick<
-        TtsRequestOptions,
-        | 'voice'
-        | 'instructions'
-        | 'language'
-        | 'doSample'
-        | 'temperature'
-        | 'topK'
-        | 'topP'
-        | 'repetitionPenalty'
-        | 'sessionId'
-        | 'flush'
-        | 'priority'
+    options:
+      Required<
+        Pick<
+          TtsRequestOptions,
+          | 'voice'
+          | 'language'
+          | 'doSample'
+          | 'temperature'
+          | 'topK'
+          | 'topP'
+          | 'repetitionPenalty'
+          | 'seed'
+          | 'sessionId'
+          | 'flush'
+          | 'priority'
+        >
       >
-    >,
+      & Pick<TtsRequestOptions, 'sequence'>,
   ): Promise<Blob | null> {
     const response = await fetch(`${this.ttsSidecarBaseUrl}/audio/segment-speech`, {
       method: 'POST',
@@ -317,7 +384,6 @@ class QwenService {
         model: CONFIG.ttsModel,
         input: optionsText,
         voice: options.voice,
-        instructions: options.instructions,
         speed: 1,
         task_type: 'CustomVoice',
         language: options.language,
@@ -326,10 +392,12 @@ class QwenService {
         top_k: options.topK,
         top_p: options.topP,
         repetition_penalty: options.repetitionPenalty,
+        seed: options.seed,
         response_format: 'wav',
         session_id: options.sessionId,
         flush: options.flush,
         priority: options.priority,
+        sequence: options.sequence,
       }),
     });
 
@@ -353,37 +421,6 @@ class QwenService {
     }
 
     return await response.blob();
-  }
-
-  private async flushSidecarSession(
-    options: Required<
-      Pick<
-        TtsRequestOptions,
-        | 'voice'
-        | 'instructions'
-        | 'language'
-        | 'doSample'
-        | 'temperature'
-        | 'topK'
-        | 'topP'
-        | 'repetitionPenalty'
-        | 'sessionId'
-      >
-    >,
-  ): Promise<void> {
-    if (typeof window === 'undefined' && this.ttsSidecarBaseUrl.startsWith('/')) {
-      return;
-    }
-
-    try {
-      await this.synthesizeThroughSidecar('', {
-        ...options,
-        flush: true,
-        priority: 1,
-      });
-    } catch (error) {
-      console.warn('⚠️ 本地 TTS 旁路 flush 失败，继续结束当前语音流:', error);
-    }
   }
 
   /**
@@ -429,7 +466,7 @@ class QwenService {
 
     void (async () => {
       try {
-        const trimmedUserText = userText.trim();
+        const trimmedUserText = this.normalizeUserInputText(userText.trim());
         if (!trimmedUserText) {
           queue.close();
           return;
@@ -522,38 +559,14 @@ class QwenService {
     language: string,
     think: boolean,
   ): Promise<void> {
-    const ttsOptions = this.createStableTtsOptions(userText, voice, language);
-    const ttsSessionId = `tts-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
+    const ttsOptions = this.createStableTtsOptions(
+      userText,
+      voice,
+      language,
+      this.createTtsTurnSeed(),
+    );
     let rawAssistantText = '';
     let assistantText = '';
-    let pendingSpeechText = '';
-    let ttsError: unknown = null;
-    let hasQueuedAudioSegment = false;
-    let audioFlushChain = Promise.resolve();
-
-    const enqueueAudioSegment = (
-      segment: string,
-      { flush = false, priority = 1 }: { flush?: boolean; priority?: number } = {},
-    ) => {
-      const audioPromise = this.synthesize(segment, {
-        ...ttsOptions,
-        sessionId: ttsSessionId,
-        flush,
-        priority,
-      });
-      audioFlushChain = audioFlushChain.then(async () => {
-        if (ttsError) return;
-
-        try {
-          const audioBlob = await audioPromise;
-          if (!audioBlob) return;
-          queue.push({ audio: audioBlob });
-        } catch (error) {
-          ttsError = error;
-        }
-      });
-    };
 
     for await (const chunk of this.chat(userText, history, { think })) {
       if (!chunk.text) continue;
@@ -567,160 +580,23 @@ class QwenService {
         continue;
       }
 
-      pendingSpeechText += nextAssistantDelta;
       queue.push({ text: nextAssistantDelta });
-
-      const { segments, remainder } = this.extractSpeakableSegments(pendingSpeechText, {
-        preferFastFirstSegment: !hasQueuedAudioSegment,
-      });
-      pendingSpeechText = remainder;
-
-      for (const segment of segments) {
-        enqueueAudioSegment(segment, {
-          flush: !hasQueuedAudioSegment,
-          priority: hasQueuedAudioSegment ? 1 : 0,
-        });
-        hasQueuedAudioSegment = true;
-      }
     }
 
     console.log('💬 Assistant:', assistantText);
 
     if (assistantText) {
-      const finalSegment = pendingSpeechText.trim();
-      if (finalSegment) {
-        enqueueAudioSegment(finalSegment, {
-          flush: true,
-          priority: hasQueuedAudioSegment ? 1 : 0,
-        });
-      } else {
-        await this.flushSidecarSession({
-          sessionId: ttsSessionId,
-          voice: ttsOptions.voice ?? CONFIG.defaultVoice,
-          instructions: ttsOptions.instructions ?? TTS_STABILITY_INSTRUCTIONS,
-          language: ttsOptions.language ?? this.inferTtsLanguage(userText),
-          doSample: ttsOptions.doSample ?? TTS_STABILITY_SAMPLING.doSample,
-          temperature: ttsOptions.temperature ?? TTS_STABILITY_SAMPLING.temperature,
-          topK: ttsOptions.topK ?? TTS_STABILITY_SAMPLING.topK,
-          topP: ttsOptions.topP ?? TTS_STABILITY_SAMPLING.topP,
-          repetitionPenalty:
-            ttsOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty,
-        });
-      }
-
-      await audioFlushChain;
-
-      if (ttsError) {
-        console.warn('⚠️ TTS 不可用，跳过语音合成:', ttsError);
+      try {
+        const audioStream = await this.synthesizeStreaming(assistantText, ttsOptions);
+        if (audioStream) {
+          queue.push({ audioStream });
+        }
+      } catch (error) {
+        console.warn('⚠️ Streaming TTS 不可用，跳过语音合成:', error);
       }
 
       queue.push({ done: true });
     }
-  }
-
-  private extractSpeakableSegments(
-    text: string,
-    options: { preferFastFirstSegment?: boolean } = {},
-  ): {
-    segments: string[];
-    remainder: string;
-  } {
-    const segments: string[] = [];
-    const boundaryPattern = /[。！？!?；;\n]/;
-    const softBoundaryPattern = /[，,、：:]/;
-    const isChineseFirstSegment = /[\u4e00-\u9fff]/.test(text);
-    const firstSegmentMinLength = isChineseFirstSegment
-      ? FIRST_STREAMING_TTS_CHINESE_MIN_LENGTH
-      : FIRST_STREAMING_TTS_ENGLISH_MIN_LENGTH;
-    let start = 0;
-    let boundaryCount = 0;
-    let lastSoftBoundary = -1;
-    const minSegmentLength = options.preferFastFirstSegment
-      ? FIRST_STREAMING_TTS_SEGMENT_LENGTH
-      : MIN_STREAMING_TTS_SEGMENT_LENGTH;
-    const minBoundaryCount = options.preferFastFirstSegment
-      ? FIRST_STREAMING_TTS_BOUNDARIES
-      : MIN_STREAMING_TTS_BOUNDARIES;
-
-    for (let i = 0; i < text.length; i++) {
-      if (softBoundaryPattern.test(text[i])) {
-        lastSoftBoundary = i;
-      }
-      if (!boundaryPattern.test(text[i])) continue;
-
-      const segment = text.slice(start, i + 1).trim();
-      if (!segment) {
-        continue;
-      }
-
-      if (options.preferFastFirstSegment) {
-        boundaryCount += 1;
-        if (segment.length < firstSegmentMinLength) {
-          continue;
-        }
-        segments.push(segment);
-        start = i + 1;
-        boundaryCount = 0;
-        lastSoftBoundary = -1;
-        continue;
-      }
-
-      boundaryCount += 1;
-      const isLongEnough = segment.length >= minSegmentLength;
-      const hasEnoughBoundaries = boundaryCount >= minBoundaryCount;
-      const shouldEmit = isLongEnough || hasEnoughBoundaries;
-      if (!shouldEmit) {
-        continue;
-      }
-
-      segments.push(segment);
-      start = i + 1;
-      boundaryCount = 0;
-      lastSoftBoundary = -1;
-    }
-
-    if (options.preferFastFirstSegment && segments.length === 0) {
-      const trimmedText = text.trim();
-      if (trimmedText.length >= firstSegmentMinLength) {
-        let splitIndex = lastSoftBoundary >= 0 ? lastSoftBoundary + 1 : -1;
-        if (splitIndex < 0 && trimmedText.length >= firstSegmentMinLength) {
-          if (!isChineseFirstSegment) {
-            const forwardWindow = text.slice(firstSegmentMinLength, Math.min(text.length, firstSegmentMinLength + 24));
-            const forwardWhitespaceOffset = forwardWindow.search(/\s/);
-            if (forwardWhitespaceOffset >= 0) {
-              splitIndex = firstSegmentMinLength + forwardWhitespaceOffset + 1;
-            } else {
-              const backwardWindow = text.slice(0, firstSegmentMinLength + 1);
-              const backwardWhitespace = Math.max(
-                backwardWindow.lastIndexOf(' '),
-                backwardWindow.lastIndexOf('\n'),
-                backwardWindow.lastIndexOf('\t'),
-              );
-              if (backwardWhitespace > 0) {
-                splitIndex = backwardWhitespace + 1;
-              }
-            }
-          }
-
-          if (splitIndex < 0) {
-            splitIndex = firstSegmentMinLength;
-          }
-        }
-
-        if (splitIndex > 0) {
-          const segment = text.slice(0, splitIndex).trim();
-          if (segment.length >= FIRST_STREAMING_TTS_SEGMENT_LENGTH) {
-            segments.push(segment);
-            start = splitIndex;
-          }
-        }
-      }
-    }
-
-    return {
-      segments,
-      remainder: text.slice(start),
-    };
   }
 
   private inferTtsLanguage(text: string): string {
@@ -735,17 +611,28 @@ class QwenService {
     userText: string,
     voice: VoiceType,
     requestedLanguage: string,
+    seed: number,
   ): TtsRequestOptions {
     return {
       voice,
       language: this.normalizeRequestedLanguage(requestedLanguage) ?? this.inferTtsLanguage(userText),
-      instructions: TTS_STABILITY_INSTRUCTIONS,
       doSample: TTS_STABILITY_SAMPLING.doSample,
       temperature: TTS_STABILITY_SAMPLING.temperature,
       topK: TTS_STABILITY_SAMPLING.topK,
       topP: TTS_STABILITY_SAMPLING.topP,
       repetitionPenalty: TTS_STABILITY_SAMPLING.repetitionPenalty,
+      seed,
     };
+  }
+
+  private createTtsTurnSeed(): number {
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      const values = new Uint32Array(1);
+      crypto.getRandomValues(values);
+      return values[0] ?? 1;
+    }
+
+    return Math.floor(Math.random() * 0xffffffff) || 1;
   }
 
   private normalizeRequestedLanguage(language: string): string | null {
@@ -772,6 +659,14 @@ class QwenService {
       /^\s*(?:\*\*)?\s*(?:response|answer|reply|中文回答|回答|回复)\s*[:：]\s*(?:\*\*)?\s*/i,
       '',
     );
+  }
+
+  private normalizeUserInputText(text: string): string {
+    let normalized = text;
+    for (const [pattern, replacement] of ASR_BRAND_NORMALIZATION_RULES) {
+      normalized = normalized.replace(pattern, replacement);
+    }
+    return normalized;
   }
 
   private resolveOpenClawSessionId(history: ChatMessage[]): string {

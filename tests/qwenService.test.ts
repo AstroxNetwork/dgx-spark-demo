@@ -37,3 +37,50 @@ test('transcribe converts non-wav recordings before upload', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('transcribe normalizes demo-specific brand terms from ASR output', async () => {
+  const sourceBlob = new Blob(['wav-audio'], { type: 'audio/wav' });
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      text: 'opencl、open claw、opencore、open core，local claw one box，open viking，还有 dgx spark',
+    }),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    },
+  );
+
+  try {
+    const transcript = await qwenService.transcribe(sourceBlob);
+    assert.equal(
+      transcript,
+      'OpenClaw、OpenClaw、OpenClaw、OpenClaw，LocalClaw OneBox，OpenViking，还有 DGX Spark',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('textChat normalizes demo-specific brand terms before sending them to chat', async () => {
+  const originalChat = qwenService.chat;
+  const capturedUserTexts: string[] = [];
+
+  qwenService.chat = async function* (userText) {
+    capturedUserTexts.push(userText);
+    yield { done: true };
+  };
+
+  try {
+    const chunks: string[] = [];
+    for await (const chunk of qwenService.textChat('我要查看open core和OpenCL的文档。')) {
+      if (chunk.text) chunks.push(chunk.text);
+    }
+
+    assert.equal(capturedUserTexts[0], '我要查看OpenClaw和OpenClaw的文档。');
+    assert.ok(chunks[0]?.includes('OpenClaw'));
+  } finally {
+    qwenService.chat = originalChat;
+  }
+});

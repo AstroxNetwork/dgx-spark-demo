@@ -13,6 +13,10 @@ OPENCLAW_PORT="${OPENCLAW_PORT:-19001}"
 OPENCLAW_LOG="${OPENCLAW_LOG:-$HOME/openclaw-logs/gateway.log}"
 PREVIEW_LOG="${PREVIEW_LOG:-$HOME/dgx-spark-preview.log}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-$HOME/.local/bin/openclaw}"
+OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw}"
+OPENCLAW_DEV_CONFIG_DIR="${OPENCLAW_DEV_CONFIG_DIR:-$HOME/.openclaw-dev}"
+OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_CONFIG_DIR/openclaw.json}"
+OPENCLAW_DEV_CONFIG_PATH="${OPENCLAW_DEV_CONFIG_PATH:-$OPENCLAW_DEV_CONFIG_DIR/openclaw.json}"
 
 if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
   export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
@@ -23,9 +27,40 @@ fi
 
 mkdir -p "$(dirname "$OPENCLAW_LOG")"
 mkdir -p "$(dirname "$PREVIEW_LOG")"
+mkdir -p "$OPENCLAW_CONFIG_DIR"
 
-if pgrep -af 'openclaw --dev gateway run' >/dev/null; then
-  pkill -f 'openclaw --dev gateway run' || true
+ensure_openclaw_config() {
+  if [[ ! -f "$OPENCLAW_CONFIG_PATH" && -f "$OPENCLAW_DEV_CONFIG_PATH" ]]; then
+    cp "$OPENCLAW_DEV_CONFIG_PATH" "$OPENCLAW_CONFIG_PATH"
+  fi
+
+  if [[ ! -f "$OPENCLAW_CONFIG_PATH" ]]; then
+    echo "Missing OpenClaw config: $OPENCLAW_CONFIG_PATH" >&2
+    return 1
+  fi
+
+  python3 - "$OPENCLAW_CONFIG_PATH" "$OPENCLAW_PORT" <<'PY'
+import json
+import pathlib
+import sys
+
+config_path = pathlib.Path(sys.argv[1])
+port = int(sys.argv[2])
+
+config = json.loads(config_path.read_text())
+gateway = config.setdefault("gateway", {})
+gateway["port"] = port
+gateway["bind"] = "lan"
+gateway.setdefault("mode", "local")
+
+config_path.write_text(json.dumps(config, indent=2) + "\n")
+PY
+}
+
+ensure_openclaw_config
+
+if pgrep -af '[o]penclaw( --dev)? gateway run' >/dev/null; then
+  pkill -f '[o]penclaw( --dev)? gateway run' || true
   sleep 2
 fi
 
@@ -34,11 +69,12 @@ if pgrep -af "vite preview --host 0.0.0.0 --port ${PREVIEW_PORT}" >/dev/null; th
   sleep 2
 fi
 
-nohup "$OPENCLAW_BIN" --dev gateway run --bind lan --force >"$OPENCLAW_LOG" 2>&1 < /dev/null &
+nohup "$OPENCLAW_BIN" gateway run --bind lan --force >"$OPENCLAW_LOG" 2>&1 < /dev/null &
 disown || true
 
 (
   cd "$ROOT_DIR"
+  npm run build >"$PREVIEW_LOG" 2>&1
   nohup npm run preview -- --host 0.0.0.0 --port "$PREVIEW_PORT" >"$PREVIEW_LOG" 2>&1 < /dev/null &
   disown || true
 )

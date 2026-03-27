@@ -61,6 +61,85 @@ test('coalescer flushes pending text immediately when a final chunk arrives', as
   assert.deepEqual(requests, ['第一句。第二句。']);
 });
 
+test('coalescer composes merged text by request sequence instead of arrival order', async () => {
+  const requests: string[] = [];
+  const coalescer = new TtsCoalescer({
+    bufferMs: 100,
+    maxBufferedChars: 100,
+    synthesize: async (_sessionId, text) => {
+      requests.push(text);
+      return new Blob([text], { type: 'audio/wav' });
+    },
+  });
+
+  const laterChunk = coalescer.enqueue({
+    sessionId: 'session-ordered',
+    text: '第二句。',
+    sequence: 1,
+  });
+  const firstChunk = await coalescer.enqueue({
+    sessionId: 'session-ordered',
+    text: '第一句。',
+    flush: true,
+    sequence: 0,
+  });
+  const laterChunkResult = await laterChunk;
+
+  assert.equal(firstChunk.merged, false);
+  assert.ok(firstChunk.audio instanceof Blob);
+  assert.equal(laterChunkResult.merged, true);
+  assert.equal(laterChunkResult.audio, null);
+
+  assert.deepEqual(requests, ['第一句。第二句。']);
+});
+
+test('coalescer keeps a five-sentence out-of-order batch complete and correctly ordered', async () => {
+  const requests: string[] = [];
+  const coalescer = new TtsCoalescer({
+    bufferMs: 100,
+    maxBufferedChars: 1000,
+    synthesize: async (_sessionId, text) => {
+      requests.push(text);
+      return new Blob([text], { type: 'audio/wav' });
+    },
+  });
+
+  const sessionId = 'session-five-sentences';
+  const sentences = [
+    '第一句，先把背景说清楚。',
+    '第二句，把条件接上。',
+    '第三句，继续补充重点。',
+    '第四句，把限制说明白。',
+    '第五句，最后一起收尾。',
+  ];
+
+  const arrivalOrder = [4, 2, 0, 1, 3];
+  const pending = arrivalOrder.map((index, offset) => coalescer.enqueue({
+    sessionId,
+    text: sentences[index],
+    sequence: index,
+    flush: offset === arrivalOrder.length - 1,
+  }));
+
+  const results = await Promise.all(pending);
+  const ownerIndex = arrivalOrder.findIndex((index) => index === 0);
+
+  assert.equal(results[ownerIndex]?.merged, false);
+  assert.ok(results[ownerIndex]?.audio instanceof Blob);
+
+  results.forEach((result, index) => {
+    if (index === ownerIndex) return;
+    assert.equal(result.merged, true);
+    assert.equal(result.audio, null);
+  });
+
+  assert.deepEqual(requests, [sentences.join('')]);
+  assert.deepEqual(
+    results.map((result) => [result.startSequence, result.endSequence]),
+    Array.from({ length: arrivalOrder.length }, () => [0, 4]),
+  );
+});
+
 test('coalescer keeps different sessions isolated', async () => {
   const requests: string[] = [];
   const coalescer = new TtsCoalescer({
