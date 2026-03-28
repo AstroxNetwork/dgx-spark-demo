@@ -29,19 +29,32 @@ if [[ ! -x "$CADDY_BIN" ]]; then
 fi
 
 detect_primary_ip() {
-  ip route get 1.1.1.1 2>/dev/null | awk '
-    {
-      for (i = 1; i <= NF; i++) {
-        if ($i == "src") {
-          print $(i + 1);
-          exit;
-        }
+  ip -brief -4 addr show up 2>/dev/null | awk '
+    $1 !~ /^(lo|docker[0-9]*|br-.*|veth.*|virbr.*|Meta)$/ {
+      split($3, cidr, "/");
+      if (cidr[1] != "") {
+        print cidr[1];
+        exit;
       }
     }
   '
 }
 
+fallback_primary_ip() {
+  hostname -I 2>/dev/null | tr " " "\n" | awk '
+    $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ &&
+    $1 !~ /^127\./ &&
+    $1 !~ /^198\.18\./ {
+      print $1;
+      exit;
+    }
+  '
+}
+
 PRIMARY_IP="${DGX_PUBLIC_IP:-$(detect_primary_ip)}"
+if [[ -z "${PRIMARY_IP:-}" ]]; then
+  PRIMARY_IP="$(fallback_primary_ip)"
+fi
 
 render_site_addresses() {
   local port="$1"
