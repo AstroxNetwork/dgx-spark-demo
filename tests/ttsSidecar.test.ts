@@ -196,3 +196,58 @@ test('coalescer orders merged text by sequence instead of arrival order', async 
   assert.equal(firstResult.merged, false);
   assert.ok(firstResult.audio instanceof Blob);
 });
+
+test('coalescer schedules separate batches by their minimum sequence, not arrival order', async () => {
+  const started: string[] = [];
+  const resolvers = new Map<string, () => void>();
+
+  const coalescer = new TtsCoalescer({
+    bufferMs: 10,
+    maxBufferedChars: 5,
+    synthesizeConcurrency: 1,
+    synthesize: async (_sessionId, text) => {
+      started.push(text);
+      await new Promise<void>((resolve) => {
+        resolvers.set(text, resolve);
+      });
+      return new Blob([text], { type: 'audio/wav' });
+    },
+  });
+
+  const second = coalescer.enqueue({
+    sessionId: 'session-batch-sequence',
+    text: '第二句。',
+    sequence: 1,
+    flush: true,
+    priority: 1,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const third = coalescer.enqueue({
+    sessionId: 'session-batch-sequence',
+    text: '第三句。',
+    sequence: 2,
+    flush: true,
+    priority: 1,
+  });
+  const first = coalescer.enqueue({
+    sessionId: 'session-batch-sequence',
+    text: '第一句。',
+    sequence: 0,
+    flush: true,
+    priority: 1,
+  });
+
+  assert.deepEqual(started, ['第二句。']);
+
+  resolvers.get('第二句。')?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, ['第二句。', '第一句。']);
+
+  resolvers.get('第一句。')?.();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(started, ['第二句。', '第一句。', '第三句。']);
+
+  resolvers.get('第三句。')?.();
+  await Promise.all([second, third, first]);
+});
