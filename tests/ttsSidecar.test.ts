@@ -164,3 +164,35 @@ test('coalescer prefers higher-priority queued batches when synthesis slots free
   resolvers.get('第三句')?.();
   await Promise.all([lowFirst, lowSecond, highPriority]);
 });
+
+test('coalescer orders merged text by sequence instead of arrival order', async () => {
+  const requests: string[] = [];
+  const coalescer = new TtsCoalescer({
+    bufferMs: 20,
+    maxBufferedChars: 100,
+    synthesize: async (_sessionId, text) => {
+      requests.push(text);
+      return new Blob([text], { type: 'audio/wav' });
+    },
+  });
+
+  const second = coalescer.enqueue({
+    sessionId: 'session-sequence',
+    text: '第二句。',
+    sequence: 1,
+  });
+  const first = coalescer.enqueue({
+    sessionId: 'session-sequence',
+    text: '第一句。',
+    sequence: 0,
+    flush: true,
+  });
+
+  const [secondResult, firstResult] = await Promise.all([second, first]);
+
+  assert.deepEqual(requests, ['第一句。第二句。']);
+  assert.equal(secondResult.merged, true);
+  assert.equal(secondResult.audio, null);
+  assert.equal(firstResult.merged, false);
+  assert.ok(firstResult.audio instanceof Blob);
+});

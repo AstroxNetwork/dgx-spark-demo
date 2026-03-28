@@ -38,7 +38,9 @@ interface TtsRequestOptions {
   topK?: number;
   topP?: number;
   repetitionPenalty?: number;
+  seed?: number;
   sessionId?: string;
+  sequence?: number;
   flush?: boolean;
   priority?: number;
 }
@@ -46,6 +48,32 @@ interface TtsRequestOptions {
 interface ChatRequestOptions {
   think?: boolean;
 }
+
+type ResolvedTtsOptions = Required<
+  Pick<
+    TtsRequestOptions,
+    | 'voice'
+    | 'instructions'
+    | 'language'
+    | 'doSample'
+    | 'temperature'
+    | 'topK'
+    | 'topP'
+    | 'repetitionPenalty'
+    | 'seed'
+  >
+>;
+
+type SidecarSynthesizeOptions = ResolvedTtsOptions & {
+  sessionId: string;
+  sequence?: number;
+  flush: boolean;
+  priority: number;
+};
+
+type SidecarFlushOptions = ResolvedTtsOptions & {
+  sessionId: string;
+};
 
 type QueueResolver = {
   resolve: (result: IteratorResult<StreamChunk>) => void;
@@ -241,6 +269,7 @@ class QwenService {
     const topP = normalizedOptions.topP ?? TTS_STABILITY_SAMPLING.topP;
     const repetitionPenalty =
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
+    const seed = normalizedOptions.seed ?? this.createTurnTtsSeed();
 
     if (!trimmedText && !normalizedOptions.flush) {
       return null;
@@ -257,7 +286,9 @@ class QwenService {
           topK,
           topP,
           repetitionPenalty,
+          seed,
           sessionId: normalizedOptions.sessionId,
+          sequence: normalizedOptions.sequence,
           flush: normalizedOptions.flush ?? false,
           priority: normalizedOptions.priority ?? 1,
         });
@@ -287,6 +318,7 @@ class QwenService {
         top_k: topK,
         top_p: topP,
         repetition_penalty: repetitionPenalty,
+        seed,
         response_format: 'wav',
       }),
     });
@@ -301,22 +333,7 @@ class QwenService {
 
   private async synthesizeThroughSidecar(
     optionsText: string,
-    options: Required<
-      Pick<
-        TtsRequestOptions,
-        | 'voice'
-        | 'instructions'
-        | 'language'
-        | 'doSample'
-        | 'temperature'
-        | 'topK'
-        | 'topP'
-        | 'repetitionPenalty'
-        | 'sessionId'
-        | 'flush'
-        | 'priority'
-      >
-    >,
+    options: SidecarSynthesizeOptions,
   ): Promise<Blob | null> {
     const response = await fetch(`${this.ttsSidecarBaseUrl}/audio/segment-speech`, {
       method: 'POST',
@@ -337,8 +354,10 @@ class QwenService {
         top_k: options.topK,
         top_p: options.topP,
         repetition_penalty: options.repetitionPenalty,
+        seed: options.seed,
         response_format: 'wav',
         session_id: options.sessionId,
+        sequence: options.sequence,
         flush: options.flush,
         priority: options.priority,
       }),
@@ -367,20 +386,7 @@ class QwenService {
   }
 
   private async flushSidecarSession(
-    options: Required<
-      Pick<
-        TtsRequestOptions,
-        | 'voice'
-        | 'instructions'
-        | 'language'
-        | 'doSample'
-        | 'temperature'
-        | 'topK'
-        | 'topP'
-        | 'repetitionPenalty'
-        | 'sessionId'
-      >
-    >,
+    options: SidecarFlushOptions,
   ): Promise<void> {
     if (typeof window === 'undefined' && this.ttsSidecarBaseUrl.startsWith('/')) {
       return;
@@ -535,6 +541,7 @@ class QwenService {
   ): Promise<void> {
     const ttsOptions = this.createStableTtsOptions(userText, voice, language);
     const ttsSessionId = `tts-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let nextTtsSequence = 0;
 
     let rawAssistantText = '';
     let assistantText = '';
@@ -547,9 +554,11 @@ class QwenService {
       segment: string,
       { flush = false, priority = 1 }: { flush?: boolean; priority?: number } = {},
     ) => {
+      const sequence = nextTtsSequence++;
       const audioPromise = this.synthesize(segment, {
         ...ttsOptions,
         sessionId: ttsSessionId,
+        sequence,
         flush,
         priority,
       });
@@ -616,6 +625,7 @@ class QwenService {
           topP: ttsOptions.topP ?? TTS_STABILITY_SAMPLING.topP,
           repetitionPenalty:
             ttsOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty,
+          seed: ttsOptions.seed ?? this.createTurnTtsSeed(),
         });
       }
 
@@ -752,6 +762,7 @@ class QwenService {
       language: this.normalizeRequestedLanguage(requestedLanguage) ?? this.inferTtsLanguage(userText),
       instructions: TTS_STABILITY_INSTRUCTIONS,
       doSample: TTS_STABILITY_SAMPLING.doSample,
+      seed: this.createTurnTtsSeed(),
       temperature: TTS_STABILITY_SAMPLING.temperature,
       topK: TTS_STABILITY_SAMPLING.topK,
       topP: TTS_STABILITY_SAMPLING.topP,
@@ -799,6 +810,10 @@ class QwenService {
     }
 
     return this.openclawSessionId;
+  }
+
+  private createTurnTtsSeed(): number {
+    return Math.floor(Math.random() * 0x7fffffff);
   }
 }
 

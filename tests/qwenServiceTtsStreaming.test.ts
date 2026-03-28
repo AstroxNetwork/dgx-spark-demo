@@ -13,6 +13,7 @@ test('voiceChat keeps the same TTS profile across streamed segments', async () =
     language: string | undefined;
     instructions: string | undefined;
     voice: string | undefined;
+    seed: number | undefined;
   }> = [];
 
   qwenService.transcribe = async () => '你好';
@@ -29,6 +30,7 @@ test('voiceChat keeps the same TTS profile across streamed segments', async () =
       language: normalizedOptions?.language,
       instructions: normalizedOptions?.instructions,
       voice: normalizedOptions?.voice,
+      seed: normalizedOptions?.seed,
     });
     return new Blob([text], { type: 'audio/wav' });
   };
@@ -59,12 +61,47 @@ test('voiceChat keeps the same TTS profile across streamed segments', async () =
     synthesizedRequests.map((request) => request.language),
     ['Chinese'],
   );
+  assert.equal(typeof synthesizedRequests[0]?.seed, 'number');
   assert.ok(
     synthesizedRequests.every(
       (request) => request.instructions === '用默认的音调，新闻联播的口吻，不带任何的情绪',
     ),
   );
   assert.deepEqual(events, ['text', 'text', 'text', 'text', 'audio', 'done']);
+});
+
+test('voiceChat keeps the same seed across all TTS segments in one turn', async () => {
+  const originalTranscribe = qwenService.transcribe;
+  const originalChat = qwenService.chat;
+  const originalSynthesize = qwenService.synthesize;
+
+  const seeds: Array<number | undefined> = [];
+
+  qwenService.transcribe = async () => '你好';
+  qwenService.chat = async function* () {
+    yield { text: '这里先给你一个完整的开场说明，把背景、限制和接下来的重点都放在这一句里统一交代清楚。' };
+    yield { text: '这是后续补充。' };
+    yield { done: true };
+  };
+  qwenService.synthesize = async (_text, options) => {
+    const normalizedOptions = typeof options === 'string' ? { voice: options } : options;
+    seeds.push(normalizedOptions?.seed);
+    return new Blob(['wav'], { type: 'audio/wav' });
+  };
+
+  try {
+    for await (const _chunk of qwenService.voiceChat(new Blob(['wav'], { type: 'audio/wav' }))) {
+      // consume stream
+    }
+  } finally {
+    qwenService.transcribe = originalTranscribe;
+    qwenService.chat = originalChat;
+    qwenService.synthesize = originalSynthesize;
+  }
+
+  assert.ok(seeds.length >= 2);
+  assert.equal(typeof seeds[0], 'number');
+  assert.ok(seeds.every((seed) => seed === seeds[0]));
 });
 
 test('voiceChat waits to synthesize until a streamed segment is long enough to keep delivery stable', async () => {

@@ -1,6 +1,7 @@
 export interface TtsCoalescerRequest {
   sessionId: string;
   text: string;
+  sequence?: number;
   flush?: boolean;
   priority?: number;
 }
@@ -11,13 +12,15 @@ export interface TtsCoalescerResult {
 }
 
 interface PendingBatch {
-  text: string;
+  segments: Map<number, string>;
   timer: ReturnType<typeof setTimeout> | null;
-  resolveOwner: (result: TtsCoalescerResult) => void;
-  rejectOwner: (error: unknown) => void;
+  waiters: Map<number, {
+    resolve: (result: TtsCoalescerResult) => void;
+    reject: (error: unknown) => void;
+  }>;
   settled: boolean;
   priority: number;
-  sequence: number;
+  batchSequence: number;
 }
 
 interface TtsCoalescerOptions {
@@ -42,7 +45,8 @@ export class TtsCoalescer {
   private readonly synthesizeConcurrency: number;
   private readonly pendingSynthesisJobs: PendingSynthesisJob[] = [];
   private activeSynthesis = 0;
-  private nextSequence = 0;
+  private nextBatchSequence = 0;
+  private nextRequestSequence = 0;
 
   constructor(options: TtsCoalescerOptions) {
     this.bufferMs = options.bufferMs;
@@ -53,42 +57,44 @@ export class TtsCoalescer {
 
   async enqueue(request: TtsCoalescerRequest): Promise<TtsCoalescerResult> {
     const hasText = request.text.trim().length > 0;
+    const requestSequence = this.resolveRequestSequence(request.sequence);
     const existing = this.sessions.get(request.sessionId);
     if (!existing) {
-      if (!hasText) {
+      if (!hasText && !request.flush) {
         return { merged: true, audio: null };
       }
 
-      return await this.createBatch(request);
+      return await this.createBatch(request, requestSequence);
     }
 
-    if (hasText) {
-      existing.text += request.text;
-    }
-    existing.priority = Math.min(existing.priority, request.priority ?? 1);
-
-    if (request.flush || existing.text.length >= this.maxBufferedChars) {
-      void this.flushSession(request.sessionId, existing);
+    if (hasText || request.flush) {
+      return await this.mergeIntoExistingBatch(existing, request, requestSequence);
     }
 
     return { merged: true, audio: null };
   }
 
-  private async createBatch(request: TtsCoalescerRequest): Promise<TtsCoalescerResult> {
+  private async createBatch(
+    request: TtsCoalescerRequest,
+    requestSequence: number,
+  ): Promise<TtsCoalescerResult> {
     return await new Promise<TtsCoalescerResult>((resolve, reject) => {
       const batch: PendingBatch = {
-        text: request.text,
+        segments: new Map(),
         timer: null,
-        resolveOwner: resolve,
-        rejectOwner: reject,
+        waiters: new Map(),
         settled: false,
         priority: request.priority ?? 1,
-        sequence: this.nextSequence++,
+        batchSequence: this.nextBatchSequence++,
       };
 
+      if (request.text.trim().length > 0) {
+        batch.segments.set(requestSequence, request.text);
+      }
+      batch.waiters.set(requestSequence, { resolve, reject });
       this.sessions.set(request.sessionId, batch);
 
-      if (request.flush || request.text.length >= this.maxBufferedChars) {
+      if (request.flush || this.getBatchText(batch).length >= this.maxBufferedChars) {
         void this.flushSession(request.sessionId, batch);
         return;
       }
@@ -96,6 +102,24 @@ export class TtsCoalescer {
       batch.timer = setTimeout(() => {
         void this.flushSession(request.sessionId, batch);
       }, this.bufferMs);
+    });
+  }
+
+  private async mergeIntoExistingBatch(
+    batch: PendingBatch,
+    request: TtsCoalescerRequest,
+    requestSequence: number,
+  ): Promise<TtsCoalescerResult> {
+    return await new Promise<TtsCoalescerResult>((resolve, reject) => {
+      if (request.text.trim().length > 0) {
+        batch.segments.set(requestSequence, request.text);
+      }
+      batch.waiters.set(requestSequence, { resolve, reject });
+      batch.priority = Math.min(batch.priority, request.priority ?? 1);
+
+      if (request.flush || this.getBatchText(batch).length >= this.maxBufferedChars) {
+        void this.flushSession(request.sessionId, batch);
+      }
     });
   }
 
@@ -110,26 +134,41 @@ export class TtsCoalescer {
 
     this.sessions.delete(sessionId);
 
-    if (!batch.text.trim()) {
-      batch.resolveOwner({ merged: true, audio: null });
+    const batchText = this.getBatchText(batch);
+    if (!batchText.trim()) {
+      this.resolveMergedBatch(batch, null);
       return;
     }
 
     try {
-      const audio = await this.scheduleSynthesis(sessionId, batch);
-      batch.resolveOwner({ merged: false, audio });
+      const audio = await this.scheduleSynthesis(sessionId, batch, batchText);
+      this.resolveMergedBatch(batch, audio);
     } catch (error) {
-      batch.rejectOwner(error);
+      this.rejectBatch(batch, error);
     }
   }
 
-  private async scheduleSynthesis(sessionId: string, batch: PendingBatch): Promise<Blob> {
+  private async scheduleSynthesis(
+    sessionId: string,
+    batch: PendingBatch,
+    text: string,
+  ): Promise<Blob> {
     return await new Promise<Blob>((resolve, reject) => {
-      this.pendingSynthesisJobs.push({ sessionId, batch, resolve, reject });
+      this.pendingSynthesisJobs.push({
+        sessionId,
+        batch: {
+          ...batch,
+          segments: new Map(batch.segments),
+          waiters: new Map(batch.waiters),
+        },
+        resolve,
+        reject,
+      });
       this.pendingSynthesisJobs.sort((left, right) => (
         left.batch.priority - right.batch.priority
-        || left.batch.sequence - right.batch.sequence
+        || left.batch.batchSequence - right.batch.batchSequence
       ));
+      (this.pendingSynthesisJobs[this.pendingSynthesisJobs.length - 1] as PendingSynthesisJob & { text?: string }).text = text;
       this.drainSynthesisQueue();
     });
   }
@@ -142,7 +181,8 @@ export class TtsCoalescer {
       }
 
       this.activeSynthesis += 1;
-      void this.synthesize(nextJob.sessionId, nextJob.batch.text)
+      const jobText = this.getBatchText(nextJob.batch);
+      void this.synthesize(nextJob.sessionId, jobText)
         .then((audio) => {
           nextJob.resolve(audio);
         })
@@ -153,6 +193,42 @@ export class TtsCoalescer {
           this.activeSynthesis -= 1;
           this.drainSynthesisQueue();
         });
+    }
+  }
+
+  private resolveRequestSequence(sequence?: number): number {
+    if (typeof sequence === 'number' && Number.isFinite(sequence)) {
+      return sequence;
+    }
+
+    return this.nextRequestSequence++;
+  }
+
+  private getBatchText(batch: PendingBatch): string {
+    return [...batch.segments.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .map(([, text]) => text)
+      .join('');
+  }
+
+  private resolveMergedBatch(batch: PendingBatch, audio: Blob | null): void {
+    const orderedSequences = [...batch.waiters.keys()].sort((left, right) => left - right);
+    const ownerSequence = orderedSequences[0];
+
+    for (const sequence of orderedSequences) {
+      const waiter = batch.waiters.get(sequence);
+      if (!waiter) continue;
+
+      waiter.resolve({
+        merged: sequence !== ownerSequence || audio === null,
+        audio: sequence === ownerSequence ? audio : null,
+      });
+    }
+  }
+
+  private rejectBatch(batch: PendingBatch, error: unknown): void {
+    for (const waiter of batch.waiters.values()) {
+      waiter.reject(error);
     }
   }
 }

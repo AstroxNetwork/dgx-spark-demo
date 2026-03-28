@@ -59,7 +59,7 @@ test('synthesize sends stable custom-voice controls for calmer playback', async 
   assert.equal(requestBody?.top_k, 10);
   assert.equal(requestBody?.top_p, 0.8);
   assert.equal(requestBody?.repetition_penalty, 1.05);
-  assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'seed'), false);
+  assert.equal(typeof requestBody?.seed, 'number');
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'max_tokens'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'input'), true);
   assert.equal(requestBody?.input, '**你好**，\n- 今天怎么样？');
@@ -291,6 +291,7 @@ test('voiceChat emits audio blobs through the segmented sidecar path', async () 
   assert.ok(requestUrls.includes('/tts-sidecar-api/audio/segment-speech'));
   assert.ok(requestBodies.length >= 1);
   assert.equal(requestBodies[0]?.response_format, 'wav');
+  assert.equal(typeof requestBodies[0]?.seed, 'number');
 });
 
 test('synthesize skips direct TTS requests when the input is empty', async () => {

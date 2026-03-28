@@ -224,6 +224,7 @@ function createTtsSidecarPlugin(ttsTarget: string): Plugin {
     topK: number;
     topP: number;
     repetitionPenalty: number;
+    seed?: number;
   }>();
   const coalescer = new TtsCoalescer({
     bufferMs: TTS_SIDE_CAR_BUFFER_MS,
@@ -253,6 +254,7 @@ function createTtsSidecarPlugin(ttsTarget: string): Plugin {
           top_k: currentRequestState.topK,
           top_p: currentRequestState.topP,
           repetition_penalty: currentRequestState.repetitionPenalty,
+          seed: currentRequestState.seed,
           response_format: 'wav',
         }),
       });
@@ -293,7 +295,9 @@ function createTtsSidecarPlugin(ttsTarget: string): Plugin {
           top_k?: number;
           top_p?: number;
           repetition_penalty?: number;
+          seed?: number;
           session_id?: string;
+          sequence?: number;
           flush?: boolean;
           priority?: number;
         };
@@ -313,10 +317,12 @@ function createTtsSidecarPlugin(ttsTarget: string): Plugin {
           topK: body.top_k ?? 10,
           topP: body.top_p ?? 0.8,
           repetitionPenalty: body.repetition_penalty ?? 1.05,
+          seed: body.seed,
         });
 
         const result = await coalescer.enqueue({
           sessionId,
+          sequence: typeof body.sequence === 'number' ? body.sequence : undefined,
           priority: typeof body.priority === 'number' ? body.priority : 1,
           text: typeof body.input === 'string' ? body.input : '',
           flush: Boolean(body.flush),
