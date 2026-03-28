@@ -116,6 +116,7 @@ afterEach(() => {
   HTMLMediaElement.prototype.pause = originalPause;
   URL.createObjectURL = originalCreateObjectUrl;
   URL.revokeObjectURL = originalRevokeObjectUrl;
+  window.localStorage.clear();
 });
 
 test('press and release sends recorded audio for processing', async () => {
@@ -536,5 +537,72 @@ test('switching language also switches the default voice', async () => {
   fireEvent.change(languageSelect, { target: { value: 'zh' } });
   await waitFor(() => {
     assert.equal(voiceSelect.value, 'Vivian');
+  });
+});
+
+test('persists locale, voice, and reasoning across refresh, but switching locale still updates the voice default', async () => {
+  installBrowserStubs();
+
+  const firstView = render(<VoiceChat />);
+
+  fireEvent.change(firstView.getByRole('combobox', { name: /语言|Language|言語/i }), {
+    target: { value: 'en' },
+  });
+
+  await waitFor(() => {
+    assert.ok(firstView.getByText('Reasoning'));
+  });
+
+  fireEvent.click(firstView.getByRole('button', { name: /Settings/i }));
+
+  const voiceSelect = firstView
+    .getAllByRole('combobox')
+    .find((element) => element.getAttribute('id') === 'voice-select') as HTMLSelectElement;
+  assert.ok(voiceSelect);
+
+  fireEvent.change(voiceSelect, {
+    target: { value: 'Ono_anna' },
+  });
+  fireEvent.click(firstView.getByRole('checkbox', { name: /Reasoning/i }));
+
+  await waitFor(() => {
+    assert.equal(voiceSelect.value, 'Ono_anna');
+  });
+
+  firstView.unmount();
+
+  const secondView = render(<VoiceChat />);
+
+  await waitFor(() => {
+    assert.ok(secondView.getByText('Reasoning'));
+  });
+
+  fireEvent.click(secondView.getByRole('button', { name: /Settings/i }));
+
+  const persistedVoiceSelect = secondView
+    .getAllByRole('combobox')
+    .find((element) => element.getAttribute('id') === 'voice-select') as HTMLSelectElement;
+  assert.ok(persistedVoiceSelect);
+  assert.equal(persistedVoiceSelect.value, 'Ono_anna');
+  assert.equal(
+    (secondView.getByRole('checkbox', { name: /Reasoning/i }) as HTMLInputElement).checked,
+    true,
+  );
+
+  fireEvent.change(secondView.getByRole('combobox', { name: /Language/i }), {
+    target: { value: 'ja' },
+  });
+
+  await waitFor(() => {
+    assert.equal(persistedVoiceSelect.value, 'Ono_anna');
+    assert.ok(secondView.getByText('深く考える'));
+  });
+
+  fireEvent.change(secondView.getByRole('combobox', { name: /言語/i }), {
+    target: { value: 'zh' },
+  });
+
+  await waitFor(() => {
+    assert.equal(persistedVoiceSelect.value, 'Vivian');
   });
 });

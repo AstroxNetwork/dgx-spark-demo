@@ -14,6 +14,64 @@ const DEFAULT_VOICE_BY_LOCALE: Record<Locale, VoiceType> = {
   ja: 'Ono_anna',
 };
 
+const VOICE_CHAT_PREFERENCES_KEY = 'voice-chat-preferences';
+const LOCALES: Locale[] = ['zh', 'en', 'ja'];
+
+type VoiceChatPreferences = {
+  locale: Locale;
+  selectedVoice: VoiceType;
+  useReasoning: boolean;
+  inputMode: InputMode;
+  viewMode: 'orb' | 'transcript';
+};
+
+function isLocale(value: unknown): value is Locale {
+  return typeof value === 'string' && LOCALES.includes(value as Locale);
+}
+
+function isVoiceType(value: unknown): value is VoiceType {
+  return typeof value === 'string' && AVAILABLE_VOICES.includes(value as VoiceType);
+}
+
+function isInputMode(value: unknown): value is InputMode {
+  return value === 'voice' || value === 'text';
+}
+
+function isViewMode(value: unknown): value is 'orb' | 'transcript' {
+  return value === 'orb' || value === 'transcript';
+}
+
+function getDefaultPreferences(): VoiceChatPreferences {
+  return {
+    locale: 'zh',
+    selectedVoice: DEFAULT_VOICE_BY_LOCALE.zh,
+    useReasoning: false,
+    inputMode: 'voice',
+    viewMode: 'orb',
+  };
+}
+
+function loadVoiceChatPreferences(): VoiceChatPreferences {
+  const fallback = getDefaultPreferences();
+  if (typeof window === 'undefined') return fallback;
+
+  try {
+    const raw = window.localStorage.getItem(VOICE_CHAT_PREFERENCES_KEY);
+    if (!raw) return fallback;
+
+    const parsed = JSON.parse(raw) as Partial<VoiceChatPreferences>;
+    return {
+      locale: isLocale(parsed.locale) ? parsed.locale : fallback.locale,
+      selectedVoice: isVoiceType(parsed.selectedVoice) ? parsed.selectedVoice : fallback.selectedVoice,
+      useReasoning: typeof parsed.useReasoning === 'boolean' ? parsed.useReasoning : fallback.useReasoning,
+      inputMode: isInputMode(parsed.inputMode) ? parsed.inputMode : fallback.inputMode,
+      viewMode: isViewMode(parsed.viewMode) ? parsed.viewMode : fallback.viewMode,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 const UI_TEXT: Record<Locale, {
   title: string;
   live: string;
@@ -168,15 +226,16 @@ function localizeUiError(error: string | null, locale: Locale): string | null {
 }
 
 export function VoiceChat() {
-  const [locale, setLocale] = useState<Locale>('zh');
+  const initialPreferences = loadVoiceChatPreferences();
+  const [locale, setLocale] = useState<Locale>(initialPreferences.locale);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isWarmingUp, setIsWarmingUp] = useState(true);
   const [currentResponse, setCurrentResponse] = useState('');
-  const [selectedVoice, setSelectedVoice] = useState<VoiceType>(DEFAULT_VOICE_BY_LOCALE.zh);
-  const [useReasoning, setUseReasoning] = useState(false);
-  const [inputMode, setInputMode] = useState<InputMode>('voice');
-  const [viewMode, setViewMode] = useState<'orb' | 'transcript'>('orb');
+  const [selectedVoice, setSelectedVoice] = useState<VoiceType>(initialPreferences.selectedVoice);
+  const [useReasoning, setUseReasoning] = useState(initialPreferences.useReasoning);
+  const [inputMode, setInputMode] = useState<InputMode>(initialPreferences.inputMode);
+  const [viewMode, setViewMode] = useState<'orb' | 'transcript'>(initialPreferences.viewMode);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [textInput, setTextInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -198,8 +257,16 @@ export function VoiceChat() {
   }, [locale]);
 
   useEffect(() => {
-    setSelectedVoice(DEFAULT_VOICE_BY_LOCALE[locale]);
-  }, [locale]);
+    if (typeof window === 'undefined') return;
+    const nextPreferences: VoiceChatPreferences = {
+      locale,
+      selectedVoice,
+      useReasoning,
+      inputMode,
+      viewMode,
+    };
+    window.localStorage.setItem(VOICE_CHAT_PREFERENCES_KEY, JSON.stringify(nextPreferences));
+  }, [inputMode, locale, selectedVoice, useReasoning, viewMode]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -509,6 +576,11 @@ export function VoiceChat() {
     }
   };
 
+  const handleLocaleChange = (nextLocale: Locale) => {
+    setLocale(nextLocale);
+    setSelectedVoice(DEFAULT_VOICE_BY_LOCALE[nextLocale]);
+  };
+
   const submitTextInput = async () => {
     const nextText = (textInputRef.current?.value ?? textInput).trim();
     if (!nextText || isProcessing) return;
@@ -576,7 +648,7 @@ export function VoiceChat() {
           <div className="top-actions">
             <select
               value={locale}
-              onChange={(e) => setLocale(e.target.value as Locale)}
+              onChange={(e) => handleLocaleChange(e.target.value as Locale)}
               className="voice-select top-language-select"
               aria-label={text.language}
             >
