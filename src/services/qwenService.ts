@@ -11,6 +11,10 @@ const TTS_STABILITY_SAMPLING = {
   topK: 10,
   topP: 0.8,
   repetitionPenalty: 1.05,
+  subtalkerDoSample: false,
+  subtalkerTemperature: 0.9,
+  subtalkerTopK: 50,
+  subtalkerTopP: 1.0,
 } as const;
 const ASR_BRAND_NORMALIZATION_RULES: Array<[RegExp, string]> = [
   [/\blocal\s*claw\s*one\s*box\b/gi, 'LocalClaw OneBox'],
@@ -38,6 +42,10 @@ interface TtsRequestOptions {
   topK?: number;
   topP?: number;
   repetitionPenalty?: number;
+  subtalkerDoSample?: boolean;
+  subtalkerTemperature?: number;
+  subtalkerTopK?: number;
+  subtalkerTopP?: number;
   seed?: number;
   sessionId?: string;
   sequence?: number;
@@ -60,6 +68,10 @@ type ResolvedTtsOptions = Required<
     | 'topK'
     | 'topP'
     | 'repetitionPenalty'
+    | 'subtalkerDoSample'
+    | 'subtalkerTemperature'
+    | 'subtalkerTopK'
+    | 'subtalkerTopP'
     | 'seed'
   >
 >;
@@ -269,6 +281,14 @@ class QwenService {
     const topP = normalizedOptions.topP ?? TTS_STABILITY_SAMPLING.topP;
     const repetitionPenalty =
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
+    const subtalkerDoSample =
+      normalizedOptions.subtalkerDoSample ?? TTS_STABILITY_SAMPLING.subtalkerDoSample;
+    const subtalkerTemperature =
+      normalizedOptions.subtalkerTemperature ?? TTS_STABILITY_SAMPLING.subtalkerTemperature;
+    const subtalkerTopK =
+      normalizedOptions.subtalkerTopK ?? TTS_STABILITY_SAMPLING.subtalkerTopK;
+    const subtalkerTopP =
+      normalizedOptions.subtalkerTopP ?? TTS_STABILITY_SAMPLING.subtalkerTopP;
     const seed = normalizedOptions.seed ?? this.createTurnTtsSeed();
 
     if (!trimmedText && !normalizedOptions.flush) {
@@ -286,6 +306,10 @@ class QwenService {
           topK,
           topP,
           repetitionPenalty,
+          subtalkerDoSample,
+          subtalkerTemperature,
+          subtalkerTopK,
+          subtalkerTopP,
           seed,
           sessionId: normalizedOptions.sessionId,
           sequence: normalizedOptions.sequence,
@@ -318,6 +342,10 @@ class QwenService {
         top_k: topK,
         top_p: topP,
         repetition_penalty: repetitionPenalty,
+        subtalker_do_sample: subtalkerDoSample,
+        subtalker_temperature: subtalkerTemperature,
+        subtalker_top_k: subtalkerTopK,
+        subtalker_top_p: subtalkerTopP,
         seed,
         response_format: 'wav',
       }),
@@ -354,6 +382,10 @@ class QwenService {
         top_k: options.topK,
         top_p: options.topP,
         repetition_penalty: options.repetitionPenalty,
+        subtalker_do_sample: options.subtalkerDoSample,
+        subtalker_temperature: options.subtalkerTemperature,
+        subtalker_top_k: options.subtalkerTopK,
+        subtalker_top_p: options.subtalkerTopP,
         seed: options.seed,
         response_format: 'wav',
         session_id: options.sessionId,
@@ -624,6 +656,14 @@ class QwenService {
           topP: ttsOptions.topP ?? TTS_STABILITY_SAMPLING.topP,
           repetitionPenalty:
             ttsOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty,
+          subtalkerDoSample:
+            ttsOptions.subtalkerDoSample ?? TTS_STABILITY_SAMPLING.subtalkerDoSample,
+          subtalkerTemperature:
+            ttsOptions.subtalkerTemperature ?? TTS_STABILITY_SAMPLING.subtalkerTemperature,
+          subtalkerTopK:
+            ttsOptions.subtalkerTopK ?? TTS_STABILITY_SAMPLING.subtalkerTopK,
+          subtalkerTopP:
+            ttsOptions.subtalkerTopP ?? TTS_STABILITY_SAMPLING.subtalkerTopP,
           seed: ttsOptions.seed ?? this.createTurnTtsSeed(),
         });
       }

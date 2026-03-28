@@ -59,6 +59,10 @@ test('synthesize sends stable custom-voice controls for calmer playback', async 
   assert.equal(requestBody?.top_k, 10);
   assert.equal(requestBody?.top_p, 0.8);
   assert.equal(requestBody?.repetition_penalty, 1.05);
+  assert.equal(requestBody?.subtalker_do_sample, false);
+  assert.equal(requestBody?.subtalker_temperature, 0.9);
+  assert.equal(requestBody?.subtalker_top_k, 50);
+  assert.equal(requestBody?.subtalker_top_p, 1.0);
   assert.equal(typeof requestBody?.seed, 'number');
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'max_tokens'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'input'), true);
