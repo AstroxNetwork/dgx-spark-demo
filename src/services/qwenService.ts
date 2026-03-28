@@ -548,27 +548,26 @@ class QwenService {
     let pendingSpeechText = '';
     let ttsError: unknown = null;
     let hasQueuedAudioSegment = false;
-    let audioFlushChain = Promise.resolve();
+    let audioSynthesisChain = Promise.resolve();
 
     const enqueueAudioSegment = (
       segment: string,
       { flush = false, priority = 1 }: { flush?: boolean; priority?: number } = {},
     ) => {
       const sequence = nextTtsSequence++;
-      const audioPromise = this.synthesize(segment, {
-        ...ttsOptions,
-        sessionId: ttsSessionId,
-        sequence,
-        flush,
-        priority,
-      });
-      audioFlushChain = audioFlushChain.then(async () => {
+      audioSynthesisChain = audioSynthesisChain.then(async () => {
         if (ttsError) return;
 
         try {
-          const audioBlob = await audioPromise;
+          const audioBlob = await this.synthesize(segment, {
+            ...ttsOptions,
+            sessionId: ttsSessionId,
+            sequence,
+            flush,
+            priority,
+          });
           if (!audioBlob) return;
-          queue.push({ audio: audioBlob, audioSequence: sequence });
+          queue.push({ audio: audioBlob });
         } catch (error) {
           ttsError = error;
         }
@@ -629,7 +628,7 @@ class QwenService {
         });
       }
 
-      await audioFlushChain;
+      await audioSynthesisChain;
 
       if (ttsError) {
         console.warn('⚠️ TTS 不可用，跳过语音合成:', ttsError);

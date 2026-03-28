@@ -234,19 +234,7 @@ export function VoiceChat() {
     let userText = '';
     let assistantText = '';
     const assistantAudioSegments: Blob[] = [];
-    const bufferedAudioSegments = new Map<number, Blob>();
-    let nextAudioSequence = 0;
     let userMessageAdded = false;
-
-    const flushReadyAudioSegments = () => {
-      while (bufferedAudioSegments.has(nextAudioSequence)) {
-        const orderedSegment = bufferedAudioSegments.get(nextAudioSequence)!;
-        bufferedAudioSegments.delete(nextAudioSequence);
-        assistantAudioSegments.push(orderedSegment);
-        void playAudio(orderedSegment);
-        nextAudioSequence += 1;
-      }
-    };
 
     try {
       // 使用三阶段流程: ASR → Chat → TTS
@@ -271,9 +259,8 @@ export function VoiceChat() {
           }
         }
         if (chunk.audio) {
-          const sequence = chunk.audioSequence ?? nextAudioSequence;
-          bufferedAudioSegments.set(sequence, chunk.audio);
-          flushReadyAudioSegments();
+          assistantAudioSegments.push(chunk.audio);
+          void playAudio(chunk.audio);
         }
       }
 
@@ -306,19 +293,7 @@ export function VoiceChat() {
 
     let assistantText = '';
     const assistantAudioSegments: Blob[] = [];
-    const bufferedAudioSegments = new Map<number, Blob>();
-    let nextAudioSequence = 0;
     let userMessageAdded = false;
-
-    const flushReadyAudioSegments = () => {
-      while (bufferedAudioSegments.has(nextAudioSequence)) {
-        const orderedSegment = bufferedAudioSegments.get(nextAudioSequence)!;
-        bufferedAudioSegments.delete(nextAudioSequence);
-        assistantAudioSegments.push(orderedSegment);
-        void playAudio(orderedSegment);
-        nextAudioSequence += 1;
-      }
-    };
 
     try {
       for await (const chunk of qwenService.textChat(
@@ -347,9 +322,8 @@ export function VoiceChat() {
           }
         }
         if (chunk.audio) {
-          const sequence = chunk.audioSequence ?? nextAudioSequence;
-          bufferedAudioSegments.set(sequence, chunk.audio);
-          flushReadyAudioSegments();
+          assistantAudioSegments.push(chunk.audio);
+          void playAudio(chunk.audio);
         }
       }
 

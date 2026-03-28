@@ -368,3 +368,62 @@ test('voiceChat keeps the first English segment until it reaches at least 80 cha
   );
   assert.ok(synthesizedTexts[0].length >= 80);
 });
+
+test('voiceChat emits audio in segment order even when later syntheses would resolve faster', async () => {
+  const originalTranscribe = qwenService.transcribe;
+  const originalChat = qwenService.chat;
+  const originalSynthesize = qwenService.synthesize;
+
+  let resolveFirstSegment: ((blob: Blob) => void) | null = null;
+  const emittedAudioTexts: string[] = [];
+  let allowSecondChunk!: () => void;
+  const secondChunkGate = new Promise<void>((resolve) => {
+    allowSecondChunk = resolve;
+  });
+
+  qwenService.transcribe = async () => '你好';
+  qwenService.chat = async function* () {
+    yield { text: '这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。' };
+    await secondChunkGate;
+    yield { text: '这是第二句，也会形成独立的后续音频。' };
+    yield { done: true };
+  };
+  qwenService.synthesize = async (text) => {
+    if (text === '这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。') {
+      return await new Promise<Blob>((resolve) => {
+        resolveFirstSegment = resolve;
+      });
+    }
+
+    return new Blob([text], { type: 'audio/wav' });
+  };
+
+  const iterator = qwenService.voiceChat(new Blob(['wav'], { type: 'audio/wav' }));
+
+  try {
+    const userChunk = await iterator.next();
+    assert.match(userChunk.value?.text ?? '', /^\[用户\]:/);
+    const firstAssistantChunk = await iterator.next();
+    assert.equal(firstAssistantChunk.value?.text, '这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。');
+
+    allowSecondChunk();
+    setTimeout(() => {
+      resolveFirstSegment?.(new Blob(['这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。'], { type: 'audio/wav' }));
+    }, 20);
+
+    for await (const chunk of iterator) {
+      if (!chunk.audio) continue;
+      emittedAudioTexts.push(await chunk.audio.text());
+    }
+  } finally {
+    resolveFirstSegment?.(new Blob(['这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。'], { type: 'audio/wav' }));
+    qwenService.transcribe = originalTranscribe;
+    qwenService.chat = originalChat;
+    qwenService.synthesize = originalSynthesize;
+  }
+
+  assert.deepEqual(emittedAudioTexts, [
+    '这是第一句，而且足够长，会先把背景、限制和后面的重点都交代清楚，所以它应该单独先开始合成。',
+    '这是第二句，也会形成独立的后续音频。',
+  ]);
+});
