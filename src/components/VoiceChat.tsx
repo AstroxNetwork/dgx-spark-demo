@@ -189,7 +189,7 @@ export function VoiceChat() {
   const isGlobalSpacePressActiveRef = useRef(false);
 
   const { isRecording, startRecording, stopRecording, error: recordError } = useAudioRecorder();
-  const { playAudio, playAudioStream, stopAudio, isPlaying, audioLevel, audioRef } = useAudioPlayer();
+  const { playAudio, stopAudio, isPlaying, audioLevel, audioRef } = useAudioPlayer();
   const text = UI_TEXT[locale];
   const localizedRecordError = localizeUiError(recordError, locale);
 
@@ -262,9 +262,6 @@ export function VoiceChat() {
           assistantAudioSegments.push(chunk.audio);
           void playAudio(chunk.audio);
         }
-        if (chunk.audioStream) {
-          void playAudioStream(chunk.audioStream);
-        }
       }
 
       // Add assistant response
@@ -285,7 +282,7 @@ export function VoiceChat() {
       setIsProcessing(false);
       setTimeout(scrollToBottom, 100);
     }
-  }, [messages, playAudio, playAudioStream, scrollToBottom, selectedVoice, useReasoning]);
+  }, [messages, playAudio, scrollToBottom, selectedVoice, useReasoning]);
 
   const processText = useCallback(async (userText: string) => {
     const trimmedUserText = userText.trim();
@@ -328,9 +325,6 @@ export function VoiceChat() {
           assistantAudioSegments.push(chunk.audio);
           void playAudio(chunk.audio);
         }
-        if (chunk.audioStream) {
-          void playAudioStream(chunk.audioStream);
-        }
       }
 
       if (assistantText) {
@@ -350,7 +344,7 @@ export function VoiceChat() {
       setIsProcessing(false);
       setTimeout(scrollToBottom, 100);
     }
-  }, [messages, playAudio, playAudioStream, scrollToBottom, selectedVoice, useReasoning]);
+  }, [messages, playAudio, scrollToBottom, selectedVoice, useReasoning]);
 
   const replayMessageAudio = useCallback(async (message: ChatMessage) => {
     if (!message.audioSegments?.length) return;

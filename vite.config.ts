@@ -4,10 +4,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { spawn } from 'node:child_process'
 import type { Plugin } from 'vite'
 import { toPlainTextForSpeech } from './src/utils/plainText'
+import { TtsCoalescer } from './server/ttsSidecar'
 
 const OPENCLAW_COMMAND = process.env.OPENCLAW_COMMAND ?? 'openclaw';
 const OPENCLAW_DEFAULT_AGENT = process.env.OPENCLAW_AGENT ?? 'dev';
 const OPENCLAW_OLLAMA_API_KEY = process.env.OLLAMA_API_KEY ?? 'ollama-local';
+const TTS_SIDE_CAR_BUFFER_MS = 900;
+const TTS_SIDE_CAR_MAX_BUFFERED_CHARS = 72;
+const TTS_SIDE_CAR_SYNTHESIZE_CONCURRENCY = 2;
 let openClawTurnQueue: Promise<void> = Promise.resolve();
 
 function normalizeBridgeMessageContent(content: string): string {
@@ -210,10 +214,57 @@ function createOpenClawBridgePlugin(): Plugin {
   };
 }
 
-function createTtsStreamBufferPlugin(params: {
-  ttsStreamTarget: string;
-  minChunkBytes: number;
-}): Plugin {
+function createTtsSidecarPlugin(ttsTarget: string): Plugin {
+  const sessionState = new Map<string, {
+    voice: string;
+    instructions: string;
+    language: string;
+    doSample: boolean;
+    temperature: number;
+    topK: number;
+    topP: number;
+    repetitionPenalty: number;
+  }>();
+  const coalescer = new TtsCoalescer({
+    bufferMs: TTS_SIDE_CAR_BUFFER_MS,
+    maxBufferedChars: TTS_SIDE_CAR_MAX_BUFFERED_CHARS,
+    synthesizeConcurrency: TTS_SIDE_CAR_SYNTHESIZE_CONCURRENCY,
+    synthesize: async (sessionId, text) => {
+      const currentRequestState = sessionState.get(sessionId);
+      if (!currentRequestState) {
+        throw new Error(`Unknown TTS sidecar session: ${sessionId}`);
+      }
+
+      const response = await fetch(`${ttsTarget}/audio/speech`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice',
+          input: text,
+          voice: currentRequestState.voice,
+          instructions: currentRequestState.instructions,
+          speed: 1,
+          task_type: 'CustomVoice',
+          language: currentRequestState.language,
+          do_sample: currentRequestState.doSample,
+          temperature: currentRequestState.temperature,
+          top_k: currentRequestState.topK,
+          top_p: currentRequestState.topP,
+          repetition_penalty: currentRequestState.repetitionPenalty,
+          response_format: 'wav',
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upstream TTS error: ${response.status} ${await response.text()}`);
+      }
+
+      return await response.blob();
+    },
+  });
+
   const install = (middlewares: {
     use: (
       path: string,
@@ -224,70 +275,72 @@ function createTtsStreamBufferPlugin(params: {
       ) => void | Promise<void>,
     ) => void;
   }) => {
-    middlewares.use('/tts-stream-api/audio/speech', async (req, res, next) => {
+    middlewares.use('/tts-sidecar-api/audio/segment-speech', async (req, res, next) => {
       if (req.method !== 'POST') {
         next();
         return;
       }
 
       try {
-        const body = await readRawBody(req);
-        const upstream = await fetch(`${params.ttsStreamTarget}/audio/speech`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': req.headers['content-type'] || 'application/json',
-            ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
-          },
-          body,
-        });
+        const rawBody = await readRawBody(req);
+        const body = JSON.parse(rawBody.toString('utf8')) as {
+          input?: string;
+          voice?: string;
+          instructions?: string;
+          language?: string;
+          do_sample?: boolean;
+          temperature?: number;
+          top_k?: number;
+          top_p?: number;
+          repetition_penalty?: number;
+          session_id?: string;
+          flush?: boolean;
+          priority?: number;
+        };
 
-        res.statusCode = upstream.status;
-        const contentType = upstream.headers.get('content-type');
-        if (contentType) {
-          res.setHeader('Content-Type', contentType);
-        }
-        res.setHeader('Cache-Control', 'no-store, no-transform');
-
-        if (!upstream.ok || !upstream.body) {
-          const errorText = await upstream.text();
-          res.end(errorText);
+        const sessionId = body.session_id?.trim();
+        if (!sessionId) {
+          sendJson(res, 400, { error: 'session_id is required' });
           return;
         }
 
-        const reader = upstream.body.getReader();
-        let buffered = Buffer.alloc(0);
+        sessionState.set(sessionId, {
+          voice: body.voice ?? 'Vivian',
+          instructions: body.instructions ?? '',
+          language: body.language ?? 'Chinese',
+          doSample: body.do_sample ?? false,
+          temperature: body.temperature ?? 0.5,
+          topK: body.top_k ?? 10,
+          topP: body.top_p ?? 0.8,
+          repetitionPenalty: body.repetition_penalty ?? 1.05,
+        });
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value || value.byteLength === 0) continue;
+        const result = await coalescer.enqueue({
+          sessionId,
+          priority: typeof body.priority === 'number' ? body.priority : 1,
+          text: typeof body.input === 'string' ? body.input : '',
+          flush: Boolean(body.flush),
+        });
 
-          buffered = Buffer.concat([buffered, Buffer.from(value)]);
-          while (buffered.length >= params.minChunkBytes) {
-            const chunk = buffered.subarray(0, params.minChunkBytes);
-            buffered = buffered.subarray(params.minChunkBytes);
-            res.write(chunk);
-          }
+        if (result.merged || !result.audio) {
+          sendJson(res, 200, { merged: true });
+          return;
         }
 
-        if (buffered.length > 0) {
-          res.write(buffered);
-        }
-        res.end();
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'audio/wav');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(Buffer.from(await result.audio.arrayBuffer()));
       } catch (error) {
-        res.statusCode = 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            error: error instanceof Error ? error.message : 'TTS stream sidecar failed',
-          }),
-        );
+        sendJson(res, 500, {
+          error: error instanceof Error ? error.message : 'TTS sidecar failed',
+        });
       }
     });
   };
 
   return {
-    name: 'tts-stream-buffer-sidecar',
+    name: 'tts-sidecar',
     configureServer(server) {
       install(server.middlewares);
     },
@@ -320,21 +373,15 @@ export default defineConfig(({ mode }) => {
   }
   const asrPort = env.DGX_ASR_PORT || '18002';
   const ttsPort = env.DGX_TTS_PORT || '18015';
-  const ttsStreamPort = env.DGX_TTS_STREAM_PORT || '18016';
-  const ttsStreamBufferBytes = Number(env.VITE_TTS_STREAM_BUFFER_BYTES || '32768');
   const asrTarget = `http://${dgxHost}:${asrPort}/v1`;
   const ttsTarget = `http://${dgxHost}:${ttsPort}/v1`;
-  const ttsStreamTarget = `http://${dgxHost}:${ttsStreamPort}/v1`;
   const proxy = buildProxyConfig(asrTarget, ttsTarget);
 
   return {
     plugins: [
       react(),
       createOpenClawBridgePlugin(),
-      createTtsStreamBufferPlugin({
-        ttsStreamTarget,
-        minChunkBytes: Number.isFinite(ttsStreamBufferBytes) ? ttsStreamBufferBytes : 32768,
-      }),
+      createTtsSidecarPlugin(ttsTarget),
     ],
     server: {
       proxy,

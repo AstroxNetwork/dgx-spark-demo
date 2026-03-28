@@ -54,15 +54,15 @@ test('synthesize sends stable custom-voice controls for calmer playback', async 
   assert.equal(requestBody?.task_type, 'CustomVoice');
   assert.equal(requestBody?.language, 'Chinese');
   assert.equal(requestBody?.speed, 1);
-  assert.equal(requestBody?.do_sample, true);
+  assert.equal(requestBody?.do_sample, false);
   assert.equal(requestBody?.temperature, 0.5);
   assert.equal(requestBody?.top_k, 10);
   assert.equal(requestBody?.top_p, 0.8);
   assert.equal(requestBody?.repetition_penalty, 1.05);
-  assert.equal(typeof requestBody?.seed, 'number');
-  assert.equal(requestBody?.max_tokens, 2048);
+  assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'seed'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'max_tokens'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'input'), true);
-  assert.equal(requestBody?.input, '你好， 今天怎么样？');
+  assert.equal(requestBody?.input, '**你好**，\n- 今天怎么样？');
 });
 
 test('chat can opt into reasoning when explicitly enabled', async () => {
@@ -120,7 +120,7 @@ test('chat throws a clear error when OpenClaw returns no text', async () => {
   }
 });
 
-test('chat strips markdown formatting from OpenClaw replies', async () => {
+test('chat returns plain bridge text as-is', async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async () => new Response(
@@ -136,7 +136,7 @@ test('chat strips markdown formatting from OpenClaw replies', async () => {
 
   try {
     const first = await qwenService.chat('介绍一下').next();
-    assert.equal(first.value?.text, 'OpenClaw 支持 agent。 第一项 第二项 docs');
+    assert.equal(first.value?.text, '**OpenClaw** 支持 `agent`。\n- 第一项\n- 第二项\n[docs](https://example.com)');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -243,49 +243,54 @@ test('warmupChat calls the OpenClaw warmup endpoint', async () => {
   assert.deepEqual(requestedUrls, ['/openclaw-api/warmup']);
 });
 
-test('synthesizeStreaming requests PCM streaming from the vLLM endpoint', async () => {
+test('voiceChat emits audio blobs through the segmented sidecar path', async () => {
   const originalFetch = globalThis.fetch;
-  let requestUrl = '';
-  let requestBody: Record<string, unknown> | null = null;
+  const originalTranscribe = qwenService.transcribe;
+  const requestUrls: string[] = [];
+  const requestBodies: Array<Record<string, unknown>> = [];
+
+  qwenService.transcribe = async () => '你好';
 
   globalThis.fetch = async (input, init) => {
-    requestUrl = String(input);
-    requestBody = JSON.parse(String(init?.body));
+    const url = String(input);
+    requestUrls.push(url);
 
-    return new Response(new ReadableStream({
-      start(controller) {
-        controller.enqueue(new Uint8Array([1, 2, 3, 4]));
-        controller.close();
-      },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'audio/pcm' },
-    });
+    if (url === '/openclaw-api/agent') {
+      return new Response(JSON.stringify({
+        text: '第一句。第二句。',
+        sessionId: 'session-sidecar',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url === '/tts-sidecar-api/audio/segment-speech') {
+      requestBodies.push(JSON.parse(String(init?.body)));
+      return new Response(new Blob(['wav'], { type: 'audio/wav' }), {
+        status: 200,
+        headers: { 'Content-Type': 'audio/wav' },
+      });
+    }
+
+    throw new Error(`Unexpected URL: ${url}`);
   };
 
   try {
-    const result = await qwenService.synthesizeStreaming('Hello there.', {
-      voice: 'Ryan',
-      language: 'English',
-      seed: 123,
-    });
+    const chunks = [];
+    for await (const chunk of qwenService.voiceChat(new Blob(['wav'], { type: 'audio/wav' }))) {
+      chunks.push(chunk);
+    }
 
-    assert.ok(result);
-    assert.equal(result?.format, 'pcm_s16le');
-    assert.equal(result?.sampleRate, 24000);
-    assert.equal(result?.channels, 1);
-    assert.ok(result?.stream);
+    assert.ok(chunks.some((chunk) => chunk.audio instanceof Blob));
   } finally {
+    qwenService.transcribe = originalTranscribe;
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(requestUrl, '/tts-stream-api/audio/speech');
-  assert.equal(requestBody?.response_format, 'pcm');
-  assert.equal(requestBody?.stream, true);
-  assert.equal(requestBody?.language, 'English');
-  assert.equal(requestBody?.voice, 'Ryan');
-  assert.equal(requestBody?.seed, 123);
-  assert.equal(requestBody?.max_tokens, 2048);
+  assert.ok(requestUrls.includes('/tts-sidecar-api/audio/segment-speech'));
+  assert.ok(requestBodies.length >= 1);
+  assert.equal(requestBodies[0]?.response_format, 'wav');
 });
 
 test('synthesize skips direct TTS requests when the input is empty', async () => {
@@ -310,9 +315,7 @@ test('synthesize skips direct TTS requests when the input is empty', async () =>
 test('voiceChat strips leading assistant labels like Response or 中文回答', async () => {
   const originalTranscribe = qwenService.transcribe;
   const originalChat = qwenService.chat;
-  const originalSynthesizeStreaming = (qwenService as unknown as {
-    synthesizeStreaming: (text: string, options?: unknown) => Promise<unknown>;
-  }).synthesizeStreaming;
+  const originalSynthesize = qwenService.synthesize;
 
   qwenService.transcribe = async () => '你好';
   qwenService.chat = async function* () {
@@ -321,19 +324,7 @@ test('voiceChat strips leading assistant labels like Response or 中文回答', 
     yield { text: ' 有什么可以帮你的吗？' };
     yield { done: true };
   };
-  (qwenService as unknown as {
-    synthesizeStreaming: (text: string, options?: unknown) => Promise<unknown>;
-  }).synthesizeStreaming = async () => ({
-    stream: new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array([1, 2]));
-        controller.close();
-      },
-    }),
-    format: 'pcm_s16le',
-    sampleRate: 24000,
-    channels: 1,
-  });
+  qwenService.synthesize = async () => new Blob(['wav'], { type: 'audio/wav' });
 
   const assistantChunks: string[] = [];
 
@@ -346,9 +337,7 @@ test('voiceChat strips leading assistant labels like Response or 中文回答', 
   } finally {
     qwenService.transcribe = originalTranscribe;
     qwenService.chat = originalChat;
-    (qwenService as unknown as {
-      synthesizeStreaming: (text: string, options?: unknown) => Promise<unknown>;
-    }).synthesizeStreaming = originalSynthesizeStreaming;
+    qwenService.synthesize = originalSynthesize;
   }
 
   assert.deepEqual(assistantChunks, ['哈喽！', ' 有什么可以帮你的吗？']);
