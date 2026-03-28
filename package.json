@@ -10,7 +10,10 @@
     "preview": "vite preview",
     "onebox:start": "bash scripts/start_onebox.sh",
     "dgx:check": "bash scripts/check_dgx_stack.sh",
-    "dgx:start": "bash scripts/start_dgx_stack.sh"
+    "dgx:start": "bash scripts/start_dgx_stack.sh",
+    "dgx:gateway:restart": "bash scripts/restart_dgx_gateway.sh",
+    "dgx:cert:download": "bash scripts/download_dgx_caddy_root_cert.sh",
+    "dgx:cert:install:macos": "bash scripts/install_macos_certificate.sh"
   },
   "dependencies": {
     "openai": "^6.32.0",

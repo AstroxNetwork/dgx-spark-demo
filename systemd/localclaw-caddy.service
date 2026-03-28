@@ -4,13 +4,14 @@ After=network-online.target localclaw-onebox.service
 Wants=network-online.target localclaw-onebox.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=spark
 Group=spark
-WorkingDirectory=/home/spark
+WorkingDirectory=/home/spark/src/dgx-spark-demo
 Environment=HOME=/home/spark
-ExecStart=/bin/bash /home/spark/openclaw-proxy/start-caddy.sh
-RemainAfterExit=yes
+ExecStart=/bin/bash /home/spark/src/dgx-spark-demo/scripts/start_dgx_caddy.sh
+Restart=always
+RestartSec=5
 TimeoutStartSec=120
 
 [Install]

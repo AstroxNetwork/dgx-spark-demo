@@ -12,6 +12,8 @@ Environment=HOME=/home/spark
 Environment=NVM_DIR=/home/spark/.nvm
 ExecStart=/bin/bash /home/spark/src/dgx-spark-demo/scripts/start_dgx_runtime.sh
 RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
 TimeoutStartSec=300
 
 [Install]

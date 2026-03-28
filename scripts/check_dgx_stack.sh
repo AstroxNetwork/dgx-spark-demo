@@ -3,17 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -f "$ROOT_DIR/.env" ]]; then
-  set -a
-  source "$ROOT_DIR/.env"
-  set +a
-fi
+# shellcheck disable=SC1091
+source "$ROOT_DIR/scripts/dgx_remote_common.sh"
 
-DGX_HOST="${1:-${DGX_HOST:-}}"
-if [[ -z "$DGX_HOST" ]]; then
-  echo "DGX_HOST is required. Pass it as the first argument or set it in $ROOT_DIR/.env." >&2
-  exit 1
-fi
+require_dgx_host "${1:-}"
 
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 yellow() { printf '\033[33m%s\033[0m\n' "$1"; }
@@ -25,7 +18,7 @@ check_http() {
   local expect="${3:-}"
 
   local response
-  if ! response="$(curl -fsS --max-time 4 "$url" 2>/dev/null)"; then
+  if ! response="$(curl -kfsS --max-time 4 "$url" 2>/dev/null)"; then
     red "[FAIL] $name -> $url"
     return 1
   fi
@@ -44,12 +37,12 @@ echo
 
 failures=0
 
-check_http "Ollama 35B" "http://${DGX_HOST}:${DGX_OLLAMA_PORT:-11434}/api/tags" "huihui_ai/qwen3.5-abliterated:35b-Claude" || failures=$((failures + 1))
-check_http "qwen-tts-rs" "http://${DGX_HOST}:${DGX_TTS_PORT:-18015}/health" "ok" || failures=$((failures + 1))
-check_http "vLLM Qwen ASR" "http://${DGX_HOST}:${DGX_ASR_PORT:-18002}/v1/models" "Qwen/Qwen3-ASR-1.7B" || failures=$((failures + 1))
-check_http "OpenViking" "http://${DGX_HOST}:${DGX_OPENVIKING_PORT:-1933}/health" "\"status\":\"ok\"" || failures=$((failures + 1))
-check_http "OpenClaw gateway" "http://${DGX_HOST}:${OPENCLAW_PORT:-19001}/health" "\"ok\":true" || failures=$((failures + 1))
-check_http "OneBox preview" "http://${DGX_HOST}:${PREVIEW_PORT:-4173}/" "<!doctype html>" || failures=$((failures + 1))
+if ! run_remote_repo_script "DGX_OLLAMA_PORT='${DGX_OLLAMA_PORT:-11434}' DGX_TTS_PORT='${DGX_TTS_PORT:-18015}' DGX_ASR_PORT='${DGX_ASR_PORT:-18002}' DGX_OPENVIKING_PORT='${DGX_OPENVIKING_PORT:-1933}' OPENCLAW_PORT='${OPENCLAW_PORT:-19001}' PREVIEW_PORT='${PREVIEW_PORT:-4173}' bash scripts/check_dgx_runtime_local.sh"; then
+  failures=$((failures + 1))
+fi
+
+check_http "OpenClaw public entry" "https://${DGX_HOST}:8443/health" "\"ok\":true" || failures=$((failures + 1))
+check_http "OneBox public entry" "https://${DGX_HOST}:8444/" "<!doctype html>" || failures=$((failures + 1))
 
 echo
 
@@ -59,5 +52,5 @@ if [[ "$failures" -eq 0 ]]; then
 fi
 
 yellow "DGX demo stack has ${failures} failing checks."
-yellow "Recommended next step: ssh into the DGX and restart the missing service(s)."
+yellow "Recommended next step: run scripts/start_dgx_stack.sh <current-dgx-ip>"
 exit 1
