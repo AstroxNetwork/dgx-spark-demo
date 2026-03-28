@@ -13,6 +13,8 @@ const TTS_SIDE_CAR_BUFFER_MS = 900;
 const TTS_SIDE_CAR_MAX_BUFFERED_CHARS = 72;
 const TTS_SIDE_CAR_SYNTHESIZE_CONCURRENCY = 2;
 let openClawTurnQueue: Promise<void> = Promise.resolve();
+let openClawTurnEpoch = 0;
+let activeOpenClawChild: ReturnType<typeof spawn> | null = null;
 
 function normalizeBridgeMessageContent(content: string): string {
   return content
@@ -92,9 +94,29 @@ function createOpenClawRequestSessionId(prefix: string): string {
 }
 
 function enqueueOpenClawTurn<T>(task: () => Promise<T>): Promise<T> {
-  const run = openClawTurnQueue.then(task, task);
+  const epoch = openClawTurnEpoch;
+  const run = openClawTurnQueue.then(async () => {
+    if (epoch !== openClawTurnEpoch) {
+      throw new Error('OpenClaw turn queue cleared');
+    }
+    return await task();
+  }, async () => {
+    if (epoch !== openClawTurnEpoch) {
+      throw new Error('OpenClaw turn queue cleared');
+    }
+    return await task();
+  });
   openClawTurnQueue = run.then(() => undefined, () => undefined);
   return run;
+}
+
+function interruptOpenClawTurnQueue(): void {
+  openClawTurnEpoch += 1;
+  openClawTurnQueue = Promise.resolve();
+
+  if (activeOpenClawChild && !activeOpenClawChild.killed) {
+    activeOpenClawChild.kill('SIGTERM');
+  }
 }
 
 function runOpenClawAgent(params: {
@@ -123,6 +145,7 @@ function runOpenClawAgent(params: {
         },
       },
     );
+    activeOpenClawChild = child;
 
     let stdout = '';
     let stderr = '';
@@ -137,6 +160,9 @@ function runOpenClawAgent(params: {
       reject(error);
     });
     child.on('close', (code) => {
+      if (activeOpenClawChild === child) {
+        activeOpenClawChild = null;
+      }
       if (code !== 0) {
         reject(new Error(`OpenClaw exited with code ${code}: ${stderr || stdout}`));
         return;
@@ -190,6 +216,7 @@ function createOpenClawBridgePlugin(): Plugin {
       }
 
       try {
+        interruptOpenClawTurnQueue();
         await enqueueOpenClawTurn(() => runOpenClawAgent({
           sessionId: createOpenClawRequestSessionId('warmup'),
           message: 'Reply with exactly OK.',
