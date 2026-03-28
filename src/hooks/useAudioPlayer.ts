@@ -31,14 +31,17 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const audioQueueRef = useRef<AudioPlaybackItem[]>([]);
   const currentAudioRef = useRef<AudioPlaybackItem | null>(null);
   const isPlayingRef = useRef(false);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  const mediaAudioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const smoothedLevelRef = useRef(0);
+  const pcmAudioContextRef = useRef<AudioContext | null>(null);
   const pcmReaderRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
-  const pcmSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const pcmPlaybackGenerationRef = useRef(0);
+  const pcmWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const pcmWorkletReadyRef = useRef<Promise<AudioWorkletNode> | null>(null);
+  const pcmDrainResolversRef = useRef<Map<number, () => void>>(new Map());
 
   const setStreamAudioLevel = useCallback((samples: Float32Array) => {
     if (samples.length === 0) return;
@@ -65,15 +68,15 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     pcmReaderRef.current = null;
     void reader?.cancel().catch(() => undefined);
 
-    for (const sourceNode of pcmSourcesRef.current) {
-      try {
-        sourceNode.stop();
-      } catch {
-        // Ignore stop races when the source has already finished.
-      }
-      sourceNode.disconnect();
+    for (const resolve of pcmDrainResolversRef.current.values()) {
+      resolve();
     }
-    pcmSourcesRef.current.clear();
+    pcmDrainResolversRef.current.clear();
+
+    const node = pcmWorkletNodeRef.current;
+    if (node) {
+      node.port.postMessage({ type: 'clear', playbackId: pcmPlaybackGenerationRef.current });
+    }
   }, []);
 
   const stopLevelTracking = useCallback(() => {
@@ -97,8 +100,8 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       return;
     }
 
-    const audioContext = audioContextRef.current ?? new AudioContextCtor();
-    audioContextRef.current = audioContext;
+    const audioContext = mediaAudioContextRef.current ?? new AudioContextCtor();
+    mediaAudioContextRef.current = audioContext;
 
     if (!sourceNodeRef.current) {
       sourceNodeRef.current = audioContext.createMediaElementSource(audio);
@@ -138,18 +141,106 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     item?.cleanup?.();
   }, []);
 
-  const ensureAudioContext = useCallback(() => {
+  const getAudioContextCtor = useCallback(() => {
     const AudioContextCtor = window.AudioContext ?? (window as typeof window & {
       webkitAudioContext?: typeof AudioContext;
     }).webkitAudioContext;
 
+    return AudioContextCtor ?? null;
+  }, []);
+
+  const ensurePcmAudioContext = useCallback((sampleRate: number) => {
+    const AudioContextCtor = getAudioContextCtor();
     if (!AudioContextCtor) {
       return null;
     }
 
-    const audioContext = audioContextRef.current ?? new AudioContextCtor();
-    audioContextRef.current = audioContext;
+    const current = pcmAudioContextRef.current;
+    if (current && current.sampleRate === sampleRate) {
+      return current;
+    }
+
+    if (current) {
+      void current.close().catch(() => undefined);
+      pcmAudioContextRef.current = null;
+      pcmWorkletNodeRef.current = null;
+      pcmWorkletReadyRef.current = null;
+    }
+
+    const audioContext = new AudioContextCtor({ sampleRate });
+    pcmAudioContextRef.current = audioContext;
     return audioContext;
+  }, [getAudioContextCtor]);
+
+  const ensurePcmWorkletNode = useCallback(async (audioContext: AudioContext) => {
+    const existingNode = pcmWorkletNodeRef.current;
+    if (existingNode && existingNode.context === audioContext) {
+      return existingNode;
+    }
+
+    if (pcmWorkletReadyRef.current) {
+      return pcmWorkletReadyRef.current;
+    }
+
+    const ready = (async () => {
+      await audioContext.audioWorklet.addModule(
+        new URL('../audio/pcm-stream-player.worklet.js', import.meta.url),
+      );
+
+      const node = new AudioWorkletNode(audioContext, 'pcm-stream-player', {
+        numberOfInputs: 0,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+
+      node.port.onmessage = (event) => {
+        const data = event.data ?? {};
+        if (data.type !== 'drained') {
+          return;
+        }
+
+        const playbackId = Number(data.playbackId ?? -1);
+        const resolve = pcmDrainResolversRef.current.get(playbackId);
+        if (resolve) {
+          pcmDrainResolversRef.current.delete(playbackId);
+          resolve();
+        }
+      };
+
+      node.connect(audioContext.destination);
+      pcmWorkletNodeRef.current = node;
+      pcmWorkletReadyRef.current = null;
+      return node;
+    })();
+
+    pcmWorkletReadyRef.current = ready;
+    return ready;
+  }, []);
+
+  const decodePcmChunk = useCallback((chunk: Uint8Array, channels: number) => {
+    const bytesPerFrame = Math.max(1, channels) * 2;
+    const evenLength = chunk.byteLength - (chunk.byteLength % bytesPerFrame);
+    if (evenLength < bytesPerFrame) {
+      return null;
+    }
+
+    const frameCount = evenLength / bytesPerFrame;
+    const samples = new Float32Array(frameCount);
+    const view = new DataView(chunk.buffer, chunk.byteOffset, evenLength);
+
+    for (let frame = 0; frame < frameCount; frame += 1) {
+      let mixed = 0;
+      for (let channel = 0; channel < channels; channel += 1) {
+        const offset = (frame * channels + channel) * 2;
+        mixed += view.getInt16(offset, true) / 0x8000;
+      }
+      samples[frame] = mixed / channels;
+    }
+
+    return {
+      samples,
+      consumedBytes: evenLength,
+    };
   }, []);
 
   const playNextAudio = useCallback(async function playNextAudioImpl() {
@@ -200,10 +291,15 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   }, [playNextAudio, stopPcmPlayback]);
 
   const playAudioStream = useCallback(async (streamingAudio: StreamingAudioPayload) => {
-    const audioContext = ensureAudioContext();
+    const audioContext = ensurePcmAudioContext(streamingAudio.sampleRate);
     if (!audioContext) {
       throw new Error('AudioContext is unavailable for streaming audio playback');
     }
+    if (!audioContext.audioWorklet) {
+      throw new Error('AudioWorklet is unavailable for streaming audio playback');
+    }
+
+    const workletNode = await ensurePcmWorkletNode(audioContext);
 
     const audio = audioRef.current;
     if (audio) {
@@ -225,43 +321,13 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     const playbackGeneration = pcmPlaybackGenerationRef.current;
     const reader = streamingAudio.stream.getReader();
     pcmReaderRef.current = reader;
-
-    let playbackCursor = Math.max(audioContext.currentTime + 0.06, audioContext.currentTime);
-    let leftover = new Uint8Array(0);
-
-    const schedulePcmChunk = (chunk: Uint8Array) => {
-      if (chunk.byteLength < 2) {
-        return;
-      }
-
-      const sampleCount = Math.floor(chunk.byteLength / 2);
-      const floatSamples = new Float32Array(sampleCount);
-      const view = new DataView(chunk.buffer, chunk.byteOffset, sampleCount * 2);
-      for (let index = 0; index < sampleCount; index += 1) {
-        floatSamples[index] = view.getInt16(index * 2, true) / 0x8000;
-      }
-
-      const buffer = audioContext.createBuffer(
-        Math.max(1, streamingAudio.channels),
-        floatSamples.length,
-        streamingAudio.sampleRate,
-      );
-      buffer.copyToChannel(floatSamples, 0);
-
-      const sourceNode = audioContext.createBufferSource();
-      sourceNode.buffer = buffer;
-      sourceNode.connect(audioContext.destination);
-      pcmSourcesRef.current.add(sourceNode);
-      sourceNode.onended = () => {
-        pcmSourcesRef.current.delete(sourceNode);
-        sourceNode.disconnect();
-      };
-
-      playbackCursor = Math.max(playbackCursor, audioContext.currentTime + 0.04);
-      sourceNode.start(playbackCursor);
-      playbackCursor += buffer.duration;
-      setStreamAudioLevel(floatSamples);
-    };
+    let pending = new Uint8Array(0);
+    let totalBytes = 0;
+    let scheduledSamples = 0;
+    const playbackComplete = new Promise<void>((resolve) => {
+      pcmDrainResolversRef.current.set(playbackGeneration, resolve);
+    });
+    workletNode.port.postMessage({ type: 'clear', playbackId: playbackGeneration });
 
     try {
       while (true) {
@@ -270,33 +336,43 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
         if (!value || pcmPlaybackGenerationRef.current !== playbackGeneration) {
           break;
         }
+        totalBytes += value.byteLength;
+        const merged = new Uint8Array(pending.byteLength + value.byteLength);
+        merged.set(pending, 0);
+        merged.set(value, pending.byteLength);
 
-        let merged = value;
-        if (leftover.byteLength > 0) {
-          merged = new Uint8Array(leftover.byteLength + value.byteLength);
-          merged.set(leftover, 0);
-          merged.set(value, leftover.byteLength);
-          leftover = new Uint8Array(0);
+        const decoded = decodePcmChunk(merged, Math.max(1, streamingAudio.channels));
+        if (!decoded) {
+          pending = merged;
+          continue;
         }
-
-        const evenLength = merged.byteLength - (merged.byteLength % 2);
-        if (evenLength !== merged.byteLength) {
-          leftover = merged.slice(evenLength);
-        }
-
-        if (evenLength > 0) {
-          schedulePcmChunk(merged.slice(0, evenLength));
-        }
+        const { samples, consumedBytes } = decoded;
+        pending = merged.subarray(consumedBytes);
+        scheduledSamples += samples.length;
+        setStreamAudioLevel(samples);
+        workletNode.port.postMessage(
+          { type: 'push', samples, playbackId: playbackGeneration },
+          [samples.buffer],
+        );
       }
 
-      if (leftover.byteLength >= 2 && pcmPlaybackGenerationRef.current === playbackGeneration) {
-        schedulePcmChunk(leftover.slice(0, leftover.byteLength - (leftover.byteLength % 2)));
+      if (pcmPlaybackGenerationRef.current !== playbackGeneration || totalBytes < 2) {
+        pcmDrainResolversRef.current.delete(playbackGeneration);
+        return;
       }
 
-      const waitMs = Math.max(0, (playbackCursor - audioContext.currentTime) * 1000);
-      await new Promise((resolve) => {
-        window.setTimeout(resolve, waitMs + 40);
+      workletNode.port.postMessage({ type: 'end', playbackId: playbackGeneration });
+
+      const durationSeconds = scheduledSamples / streamingAudio.sampleRate;
+      console.log('[stream-audio] worklet playback', {
+        receivedBytes: totalBytes,
+        scheduledBytes: scheduledSamples * 2,
+        sampleRate: streamingAudio.sampleRate,
+        channels: streamingAudio.channels,
+        durationSeconds: Number(durationSeconds.toFixed(3)),
       });
+
+      await playbackComplete;
     } finally {
       if (pcmPlaybackGenerationRef.current === playbackGeneration) {
         pcmReaderRef.current = null;
@@ -304,8 +380,17 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
         setIsPlaying(false);
         stopLevelTracking();
       }
+      pcmDrainResolversRef.current.delete(playbackGeneration);
     }
-  }, [ensureAudioContext, releaseAudioItem, setStreamAudioLevel, stopLevelTracking, stopPcmPlayback]);
+  }, [
+    decodePcmChunk,
+    ensurePcmAudioContext,
+    ensurePcmWorkletNode,
+    releaseAudioItem,
+    setStreamAudioLevel,
+    stopLevelTracking,
+    stopPcmPlayback,
+  ]);
 
   const stopAudio = useCallback(() => {
     const audio = audioRef.current;
@@ -326,6 +411,8 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   useEffect(() => {
     return () => {
       stopAudio();
+      void pcmAudioContextRef.current?.close().catch(() => undefined);
+      void mediaAudioContextRef.current?.close().catch(() => undefined);
     };
   }, [stopAudio]);
 

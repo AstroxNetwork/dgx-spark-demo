@@ -15,6 +15,7 @@ export function toPlainTextForSpeech(text: string): string {
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/_(.*?)_/g, '$1')
     .replace(/~~(.*?)~~/g, '$1')
-    .replace(/\n{2,}/g, '\n')
+    .replace(/\n+/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }

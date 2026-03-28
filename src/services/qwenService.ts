@@ -8,9 +8,11 @@ const TTS_STABILITY_SAMPLING = {
   topK: 10,
   topP: 0.8,
   repetitionPenalty: 1.05,
+  maxTokens: 2048,
 } as const;
 const ASR_BRAND_NORMALIZATION_RULES: Array<[RegExp, string]> = [
   [/\blocal\s*claw\s*one\s*box\b/gi, 'LocalClaw OneBox'],
+  [/\bopen\s*cloud\b/gi, 'OpenClaw'],
   [/\bopen\s*core\b/gi, 'OpenClaw'],
   [/\bopen\s*claw\b/gi, 'OpenClaw'],
   [/\bopencl\b/gi, 'OpenClaw'],
@@ -27,6 +29,7 @@ interface TtsRequestOptions {
   topP?: number;
   repetitionPenalty?: number;
   seed?: number;
+  maxTokens?: number;
 }
 
 interface ChatRequestOptions {
@@ -225,6 +228,7 @@ class QwenService {
     const repetitionPenalty =
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
     const seed = normalizedOptions.seed ?? this.createTtsTurnSeed();
+    const maxTokens = normalizedOptions.maxTokens ?? TTS_STABILITY_SAMPLING.maxTokens;
 
     if (!trimmedText) {
       return null;
@@ -251,6 +255,7 @@ class QwenService {
         top_p: topP,
         repetition_penalty: repetitionPenalty,
         seed,
+        max_tokens: maxTokens,
         response_format: 'wav',
       }),
     });
@@ -284,6 +289,7 @@ class QwenService {
     const repetitionPenalty =
       normalizedOptions.repetitionPenalty ?? TTS_STABILITY_SAMPLING.repetitionPenalty;
     const seed = normalizedOptions.seed ?? this.createTtsTurnSeed();
+    const maxTokens = normalizedOptions.maxTokens ?? TTS_STABILITY_SAMPLING.maxTokens;
 
     const response = await fetch(`${this.ttsStreamBaseUrl}/audio/speech`, {
       method: 'POST',
@@ -304,6 +310,7 @@ class QwenService {
         top_p: topP,
         repetition_penalty: repetitionPenalty,
         seed,
+        max_tokens: maxTokens,
         stream: true,
         response_format: 'pcm',
       }),
@@ -525,6 +532,7 @@ class QwenService {
       topP: TTS_STABILITY_SAMPLING.topP,
       repetitionPenalty: TTS_STABILITY_SAMPLING.repetitionPenalty,
       seed,
+      maxTokens: TTS_STABILITY_SAMPLING.maxTokens,
     };
   }
 

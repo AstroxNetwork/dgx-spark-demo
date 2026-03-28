@@ -32,6 +32,20 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   });
 }
 
+function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of req) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      }
+      resolve(Buffer.concat(chunks));
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
@@ -196,7 +210,94 @@ function createOpenClawBridgePlugin(): Plugin {
   };
 }
 
-function buildProxyConfig(asrTarget: string, ttsTarget: string, ttsStreamTarget: string) {
+function createTtsStreamBufferPlugin(params: {
+  ttsStreamTarget: string;
+  minChunkBytes: number;
+}): Plugin {
+  const install = (middlewares: {
+    use: (
+      path: string,
+      handler: (
+        req: IncomingMessage,
+        res: ServerResponse,
+        next: (err?: unknown) => void,
+      ) => void | Promise<void>,
+    ) => void;
+  }) => {
+    middlewares.use('/tts-stream-api/audio/speech', async (req, res, next) => {
+      if (req.method !== 'POST') {
+        next();
+        return;
+      }
+
+      try {
+        const body = await readRawBody(req);
+        const upstream = await fetch(`${params.ttsStreamTarget}/audio/speech`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': req.headers['content-type'] || 'application/json',
+            ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
+          },
+          body,
+        });
+
+        res.statusCode = upstream.status;
+        const contentType = upstream.headers.get('content-type');
+        if (contentType) {
+          res.setHeader('Content-Type', contentType);
+        }
+        res.setHeader('Cache-Control', 'no-store, no-transform');
+
+        if (!upstream.ok || !upstream.body) {
+          const errorText = await upstream.text();
+          res.end(errorText);
+          return;
+        }
+
+        const reader = upstream.body.getReader();
+        let buffered = Buffer.alloc(0);
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value || value.byteLength === 0) continue;
+
+          buffered = Buffer.concat([buffered, Buffer.from(value)]);
+          while (buffered.length >= params.minChunkBytes) {
+            const chunk = buffered.subarray(0, params.minChunkBytes);
+            buffered = buffered.subarray(params.minChunkBytes);
+            res.write(chunk);
+          }
+        }
+
+        if (buffered.length > 0) {
+          res.write(buffered);
+        }
+        res.end();
+      } catch (error) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(
+          JSON.stringify({
+            error: error instanceof Error ? error.message : 'TTS stream sidecar failed',
+          }),
+        );
+      }
+    });
+  };
+
+  return {
+    name: 'tts-stream-buffer-sidecar',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+function buildProxyConfig(asrTarget: string, ttsTarget: string) {
   return {
     '/asr-api': {
       target: asrTarget,
@@ -207,11 +308,6 @@ function buildProxyConfig(asrTarget: string, ttsTarget: string, ttsStreamTarget:
       target: ttsTarget,
       changeOrigin: true,
       rewrite: (path: string) => path.replace(/^\/tts-api/, ''),
-    },
-    '/tts-stream-api': {
-      target: ttsStreamTarget,
-      changeOrigin: true,
-      rewrite: (path: string) => path.replace(/^\/tts-stream-api/, ''),
     },
   };
 }
@@ -224,14 +320,22 @@ export default defineConfig(({ mode }) => {
   }
   const asrPort = env.DGX_ASR_PORT || '18002';
   const ttsPort = env.DGX_TTS_PORT || '18015';
-  const ttsStreamPort = env.DGX_TTS_STREAM_PORT || '18005';
+  const ttsStreamPort = env.DGX_TTS_STREAM_PORT || '18016';
+  const ttsStreamBufferBytes = Number(env.VITE_TTS_STREAM_BUFFER_BYTES || '32768');
   const asrTarget = `http://${dgxHost}:${asrPort}/v1`;
   const ttsTarget = `http://${dgxHost}:${ttsPort}/v1`;
   const ttsStreamTarget = `http://${dgxHost}:${ttsStreamPort}/v1`;
-  const proxy = buildProxyConfig(asrTarget, ttsTarget, ttsStreamTarget);
+  const proxy = buildProxyConfig(asrTarget, ttsTarget);
 
   return {
-    plugins: [react(), createOpenClawBridgePlugin()],
+    plugins: [
+      react(),
+      createOpenClawBridgePlugin(),
+      createTtsStreamBufferPlugin({
+        ttsStreamTarget,
+        minChunkBytes: Number.isFinite(ttsStreamBufferBytes) ? ttsStreamBufferBytes : 32768,
+      }),
+    ],
     server: {
       proxy,
     },

@@ -60,8 +60,9 @@ test('synthesize sends stable custom-voice controls for calmer playback', async 
   assert.equal(requestBody?.top_p, 0.8);
   assert.equal(requestBody?.repetition_penalty, 1.05);
   assert.equal(typeof requestBody?.seed, 'number');
+  assert.equal(requestBody?.max_tokens, 2048);
   assert.equal(Object.prototype.hasOwnProperty.call(requestBody ?? {}, 'input'), true);
-  assert.equal(requestBody?.input, '你好，\n今天怎么样？');
+  assert.equal(requestBody?.input, '你好， 今天怎么样？');
 });
 
 test('chat can opt into reasoning when explicitly enabled', async () => {
@@ -135,7 +136,7 @@ test('chat strips markdown formatting from OpenClaw replies', async () => {
 
   try {
     const first = await qwenService.chat('介绍一下').next();
-    assert.equal(first.value?.text, 'OpenClaw 支持 agent。\n第一项\n第二项\ndocs');
+    assert.equal(first.value?.text, 'OpenClaw 支持 agent。 第一项 第二项 docs');
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -284,6 +285,7 @@ test('synthesizeStreaming requests PCM streaming from the vLLM endpoint', async 
   assert.equal(requestBody?.language, 'English');
   assert.equal(requestBody?.voice, 'Ryan');
   assert.equal(requestBody?.seed, 123);
+  assert.equal(requestBody?.max_tokens, 2048);
 });
 
 test('synthesize skips direct TTS requests when the input is empty', async () => {
