@@ -400,11 +400,10 @@ function buildProxyConfig(asrTarget: string, ttsTarget: string) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const dgxHost = env.DGX_HOST || '127.0.0.1';
   const asrPort = env.DGX_ASR_PORT || '18002';
   const ttsPort = env.DGX_TTS_PORT || '18015';
-  const asrTarget = `http://${dgxHost}:${asrPort}/v1`;
-  const ttsTarget = `http://${dgxHost}:${ttsPort}/v1`;
+  const asrTarget = `http://127.0.0.1:${asrPort}/v1`;
+  const ttsTarget = `http://127.0.0.1:${ttsPort}/v1`;
   const proxy = buildProxyConfig(asrTarget, ttsTarget);
 
   return {
