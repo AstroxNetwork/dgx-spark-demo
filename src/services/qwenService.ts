@@ -568,7 +568,7 @@ class QwenService {
         try {
           const audioBlob = await audioPromise;
           if (!audioBlob) return;
-          queue.push({ audio: audioBlob });
+          queue.push({ audio: audioBlob, audioSequence: sequence });
         } catch (error) {
           ttsError = error;
         }

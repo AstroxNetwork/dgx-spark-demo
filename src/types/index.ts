@@ -13,5 +13,6 @@ export type InputMode = 'voice' | 'text';
 export interface StreamChunk {
   text?: string;
   audio?: Blob;
+  audioSequence?: number;
   done?: boolean;
 }
