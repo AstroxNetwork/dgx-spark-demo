@@ -25,8 +25,6 @@ if pgrep -af "vite preview --host 0.0.0.0 --port ${PREVIEW_PORT}" >/dev/null; th
   sleep 2
 fi
 
-bash "$ROOT_DIR/scripts/start_openclaw_gateway.sh"
-
 (
   cd "$ROOT_DIR"
   npm run build >"$PREVIEW_LOG" 2>&1

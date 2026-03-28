@@ -1,0 +1,19 @@
+[Unit]
+Description=LocalClaw OpenClaw gateway
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=spark
+Group=spark
+WorkingDirectory=/home/spark/src/dgx-spark-demo
+Environment=HOME=/home/spark
+Environment=OPENCLAW_FOREGROUND=1
+ExecStart=/bin/bash /home/spark/src/dgx-spark-demo/scripts/start_openclaw_gateway.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

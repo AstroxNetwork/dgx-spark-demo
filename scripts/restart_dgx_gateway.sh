@@ -9,8 +9,8 @@ source "$SCRIPT_DIR/dgx_remote_common.sh"
 require_dgx_host "${1:-}"
 
 echo "Restarting OpenClaw gateway on ${DGX_USER}@${DGX_HOST}"
-run_remote_repo_script "OPENCLAW_PORT='${OPENCLAW_PORT:-19001}' bash scripts/start_openclaw_gateway.sh"
+run_remote_sudo "systemctl restart localclaw-gateway.service localclaw-caddy.service"
 
 echo
-curl -fsS --max-time 10 "http://${DGX_HOST}:${OPENCLAW_PORT:-19001}/health"
+curl -kfsS --max-time 10 "https://${DGX_HOST}:8443/health"
 echo

@@ -1,7 +1,7 @@
 [Unit]
 Description=LocalClaw Caddy reverse proxy
-After=network-online.target localclaw-onebox.service
-Wants=network-online.target localclaw-onebox.service
+After=network-online.target localclaw-onebox.service localclaw-gateway.service
+Wants=network-online.target localclaw-onebox.service localclaw-gateway.service
 
 [Service]
 Type=simple

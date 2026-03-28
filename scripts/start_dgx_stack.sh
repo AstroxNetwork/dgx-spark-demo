@@ -13,7 +13,7 @@ echo
 
 run_remote_sudo "cd ${DGX_REPO_DIR} && git fetch origin && git reset --hard origin/main"
 run_remote_repo_script "bash scripts/install_dgx_services.sh"
-run_remote_sudo "systemctl restart localclaw-onebox.service localclaw-caddy.service"
+run_remote_sudo "systemctl restart localclaw-onebox.service localclaw-gateway.service localclaw-caddy.service"
 
 echo
 bash "$ROOT_DIR/scripts/check_dgx_stack.sh" "$DGX_HOST"

@@ -17,6 +17,7 @@ OPENCLAW_CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$HOME/.openclaw}"
 OPENCLAW_DEV_CONFIG_DIR="${OPENCLAW_DEV_CONFIG_DIR:-$HOME/.openclaw-dev}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-$OPENCLAW_CONFIG_DIR/openclaw.json}"
 OPENCLAW_DEV_CONFIG_PATH="${OPENCLAW_DEV_CONFIG_PATH:-$OPENCLAW_DEV_CONFIG_DIR/openclaw.json}"
+OPENCLAW_FOREGROUND="${OPENCLAW_FOREGROUND:-0}"
 
 mkdir -p "$(dirname "$OPENCLAW_LOG")"
 mkdir -p "$OPENCLAW_CONFIG_DIR"
@@ -50,6 +51,10 @@ PY
 }
 
 ensure_openclaw_config
+
+if [[ "$OPENCLAW_FOREGROUND" == "1" ]]; then
+  exec "$OPENCLAW_BIN" gateway run --bind lan --force
+fi
 
 systemctl --user stop openclaw-gateway.service >/dev/null 2>&1 || true
 pkill -f '[o]penclaw( --dev)? gateway run' >/dev/null 2>&1 || true

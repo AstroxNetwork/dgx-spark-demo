@@ -14,8 +14,9 @@ sudo_run() {
 }
 
 sudo_run install -m 0644 "$ROOT_DIR/systemd/localclaw-onebox.service" "$SYSTEMD_DIR/localclaw-onebox.service"
+sudo_run install -m 0644 "$ROOT_DIR/systemd/localclaw-gateway.service" "$SYSTEMD_DIR/localclaw-gateway.service"
 sudo_run install -m 0644 "$ROOT_DIR/systemd/localclaw-caddy.service" "$SYSTEMD_DIR/localclaw-caddy.service"
 sudo_run systemctl daemon-reload
-sudo_run systemctl enable localclaw-onebox.service localclaw-caddy.service
+sudo_run systemctl enable localclaw-onebox.service localclaw-gateway.service localclaw-caddy.service
 
 echo "Installed DGX systemd services from $ROOT_DIR"
