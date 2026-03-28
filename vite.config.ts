@@ -400,10 +400,7 @@ function buildProxyConfig(asrTarget: string, ttsTarget: string) {
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const dgxHost = env.DGX_HOST;
-  if (!dgxHost) {
-    throw new Error('DGX_HOST is required. Set it in .env or the environment before starting Vite.');
-  }
+  const dgxHost = env.DGX_HOST || '127.0.0.1';
   const asrPort = env.DGX_ASR_PORT || '18002';
   const ttsPort = env.DGX_TTS_PORT || '18015';
   const asrTarget = `http://${dgxHost}:${asrPort}/v1`;

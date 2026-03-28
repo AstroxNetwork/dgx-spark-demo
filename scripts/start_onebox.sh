@@ -18,7 +18,6 @@ if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
   nvm use --delete-prefix 25 >/dev/null
 fi
 
-mkdir -p "$(dirname "$OPENCLAW_LOG")"
 mkdir -p "$(dirname "$PREVIEW_LOG")"
 
 if pgrep -af "vite preview --host 0.0.0.0 --port ${PREVIEW_PORT}" >/dev/null; then
